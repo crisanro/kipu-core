@@ -24,7 +24,7 @@ services:
       dockerfile: Dockerfile
     container_name: kipu_core
     ports:
-      - "3000:3000"
+      - "3001:3000"
     # Solo depende de 'db' si el servicio 'db' está activo
     restart: always
     environment:
@@ -52,5 +52,6 @@ volumes:
 networks:
   red_infraestructura:
     external: true
+
 
 

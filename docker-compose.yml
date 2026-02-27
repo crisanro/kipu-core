@@ -3,26 +3,26 @@ version: '3.8'
 services:
   # Base de Datos Interna
   # El desarrollador puede comentar este bloque completo si usará su propio Postgres
-  db:
-    image: postgres:15-alpine
-    container_name: kipu_db
-    restart: always
-    environment:
-      - POSTGRES_USER=${DB_USER:-postgres}
-      - POSTGRES_PASSWORD=${DB_PASSWORD:-password123}
-      - POSTGRES_DB=${DB_NAME:-kipu_sri}
-    volumes:
-      # Este volumen asegura que las tablas se creen solas la primera vez
-      - ./init-db:/docker-entrypoint-initdb.d
-      - kipu_db_data:/var/lib/postgresql/data
-    networks:
-      - kipu
-
+#  db:
+#    image: postgres:15-alpine
+#    container_name: kipu_db
+#    restart: always
+#    environment:
+#      - POSTGRES_USER=${DB_USER:-postgres}
+#      - POSTGRES_PASSWORD=${DB_PASSWORD:-password123}
+#      - POSTGRES_DB=${DB_NAME:-kipu_sri}
+#    volumes:
+#      # Este volumen asegura que las tablas se creen solas la primera vez
+#      - ./init-db:/docker-entrypoint-initdb.d
+#      - kipu_db_data:/var/lib/postgresql/data
+#    networks:
+#      - red_infraestructura
+ 
   backend:
     build:
-      context: ./backend
+      context: ./
       dockerfile: Dockerfile
-    container_name: kipu_backend
+    container_name: kipu_core
     ports:
       - "3000:3000"
     # Solo depende de 'db' si el servicio 'db' está activo
@@ -52,4 +52,5 @@ volumes:
 networks:
   red_infraestructura:
     external: true
+
 

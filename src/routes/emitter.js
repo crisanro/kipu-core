@@ -15,7 +15,7 @@ const upload = multer({
 
 /**
  * @openapi
- * /api/emitter/profile:
+ * /emitter/profile:
  *   get:
  *     summary: Obtener datos del perfil del emisor
  *     tags: [Emitter]
@@ -72,7 +72,7 @@ router.get('/profile', authMiddleware, async (req, res) => {
 
 /**
  * @openapi
- * /api/emitter/upload-p12:
+ * /emitter/upload-p12:
  *   post:
  *     summary: Subir y vincular firma electrónica P12
  *     tags: [Emitter]
@@ -155,7 +155,7 @@ router.post('/upload-p12', authMiddleware, upload.single('file'), async (req, re
 
 /**
  * @openapi
- * /api/emitter/config:
+ * /emitter/config:
  *   patch:
  *     summary: Actualizar configuración del emisor
  *     tags: [Emitter]
@@ -199,5 +199,6 @@ router.patch('/config', authMiddleware, async (req, res) => {
         res.status(500).json({ ok: false, error: error.message });
     }
 });
+
 
 module.exports = router;

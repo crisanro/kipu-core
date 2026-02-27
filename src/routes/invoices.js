@@ -6,7 +6,7 @@ const { calcularTotalesEImpuestos } = require('../utils/calculadoraSri');
 
 /**
  * @openapi
- * /api/invoices/emit:
+ * /invoices/emit:
  *   post:
  *     summary: Emitir una factura electrónica
  *     tags: [Invoices]
@@ -149,7 +149,7 @@ router.post('/emit', authMiddleware, async (req, res) => {
 
 /**
  * @openapi
- * /api/invoices/history:
+ * /invoices/history:
  *   get:
  *     summary: Obtener historial de facturas del emisor
  *     tags: [Invoices]
@@ -200,5 +200,6 @@ router.get('/history', authMiddleware, async (req, res) => {
         res.status(500).json({ ok: false, error: error.message });
     }
 });
+
 
 module.exports = router;

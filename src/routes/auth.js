@@ -5,7 +5,7 @@ const { authMiddleware } = require('../middlewares/auth');
 
 /**
  * @openapi
- * /api/auth/sync:
+ * /auth/sync:
  *  post:
  *      summary: Sincronizar usuario de Firebase (Paso 1 del Registro)
  *      description: Guarda el UID y correo en la tabla profiles. No pide RUC.
@@ -57,7 +57,7 @@ router.post('/sync', authMiddleware, async (req, res) => {
 
 /**
  * @openapi
- * /api/auth/activar-ruc:
+ * /auth/activar-ruc:
  *   post:
  *     summary: Activar cuenta de facturación (Onboarding Paso 2)
  *     description: Registra la empresa, crea el establecimiento 001 y punto de emisión 100, y lo vincula al usuario de Firebase.
@@ -176,5 +176,6 @@ router.post('/activar-ruc', authMiddleware, async (req, res) => {
         client.release();
     }
 });
+
 
 module.exports = router;

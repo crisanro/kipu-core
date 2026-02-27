@@ -5,7 +5,7 @@ const { serviceAuth } = require('../middlewares/serviceAuth');
 
 /**
  * @openapi
- * /api/admin/topup:
+ * /admin/topup:
  *   post:
  *     summary: Recargar créditos a un emisor (exclusivo n8n)
  *     tags: [Admin]
@@ -90,5 +90,6 @@ router.post('/topup', serviceAuth, async (req, res) => {
         client.release();
     }
 });
+
 
 module.exports = router;

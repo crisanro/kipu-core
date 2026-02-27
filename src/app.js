@@ -10,7 +10,8 @@ const { enviarFacturasAlSRI, autorizarFacturasSRI } = require('./workers/authWor
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-
+// --- 1. DECLARACIÓN DEL ROUTER PRINCIPAL ---
+const mainRouter = express.Router();
 // --- CONFIGURACIÓN DE CRON JOBS ---
 
 // Job 1: Enviar facturas FIRMADAS al SRI (Cada 20 segundos)
@@ -116,7 +117,16 @@ const swaggerOptions = {
             version: '2.0.0',
             description: 'Motor modular de facturación electrónica con Firebase Auth y PostgreSQL Nativo.',
         },
-        servers: [{ url: `http://localhost:${PORT}` }],
+        servers: [
+            { 
+                url: `https://core.kipu.ec/api/v1`, 
+                description: 'Servidor de Producción' 
+            },
+            { 
+                url: `http://localhost:${PORT}/api/v1`, 
+                description: 'Servidor Local (Desarrollo)' 
+            }
+        ],
         components: {
             securitySchemes: {
                 bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
@@ -134,44 +144,44 @@ try {
     console.error('⚠️ Error en la sintaxis de Swagger (YAML):', err.message);
     swaggerSpec = { openapi: '3.0.0', info: { title: 'Error en Docs' }, paths: {} };
 }
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+mainRouter.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 
 // --- REGISTRO DE RUTAS MODULARES ---
 
 // 1. Autenticación (Firebase JWT + Sync JIT)
-app.use('/api/auth', require('./routes/auth'));
+mainRouter.use('/auth', require('./routes/auth'));
 
 // 2. Facturación (Emisión, Historial, Stats)
-app.use('/api/invoices', require('./routes/invoices'));
+mainRouter.use('/invoices', require('./routes/invoices'));
 
 // 3. Emisor (Perfil, P12, Configuración ambiente)
-app.use('/api/emitter', require('./routes/emitter'));
+mainRouter.use('/emitter', require('./routes/emitter'));
 
 // 4. Estructura (Establecimientos y Puntos de Emisión)
-app.use('/api/structure', require('./routes/structure'));
+mainRouter.use('/structure', require('./routes/structure'));
 
 // 5. Administración (Recargas de créditos vía n8n)
-app.use('/api/admin', require('./routes/admin'));
+mainRouter.use('/admin', require('./routes/admin'));
 
 // 5. Administración (Recargas de créditos vía n8n)
-app.use('/api/keys', require('./routes/apiKeys'));
+mainRouter.use('/keys', require('./routes/apiKeys'));
 
 // 5. Administración (Recargas de créditos vía n8n)
-app.use('/api/integrations', require('./routes/integracion'));
+mainRouter.use('/integrations', require('./routes/integracion'));
 
 // 6. Público (Descargas de PDF/XML sin token y Tracking)
-app.use('/api/public', require('./routes/public'));
+mainRouter.use('/public', require('./routes/public'));
 
 // --- DIAGNÓSTICOS Y SALUD ---
-app.get('/health', (req, res) => res.json({ 
+mainRouter.get('/health', (req, res) => res.json({ 
     status: 'OK', 
     uptime: process.uptime(),
     timestamp: new Date() 
 }));
 
 // Endpoint de diagnóstico para encriptación (útil en desarrollo)
-app.get('/api/diag/crypto', async (req, res) => {
+mainRouter.get('/diag/crypto', async (req, res) => {
     const { test } = req.query;
     if (!test) return res.json({ ok: false, mensaje: "Envíe ?test=texto" });
     const { encrypt, decrypt } = require('./utils/cryptoUtils');
@@ -179,6 +189,9 @@ app.get('/api/diag/crypto', async (req, res) => {
     const dec = decrypt(enc);
     res.json({ match: test === dec, env_key_set: !!process.env.ENCRYPTION_KEY });
 });
+
+// --- 2. LA MAGIA: CONECTAR EL ROUTER A LA APP CON EL PREFIJO ---
+app.use('/api/v1', mainRouter);
 
 // --- MANEJO DE ERRORES 404 ---
 app.use((req, res) => {
@@ -200,5 +213,6 @@ app.listen(PORT, () => {
     ---------------------------------------------------
     `);
 });
+
 
 module.exports = app;

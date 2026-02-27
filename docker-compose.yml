@@ -1,0 +1,55 @@
+version: '3.8'
+
+services:
+  # Base de Datos Interna
+  # El desarrollador puede comentar este bloque completo si usará su propio Postgres
+  db:
+    image: postgres:15-alpine
+    container_name: kipu_db
+    restart: always
+    environment:
+      - POSTGRES_USER=${DB_USER:-postgres}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-password123}
+      - POSTGRES_DB=${DB_NAME:-kipu_sri}
+    volumes:
+      # Este volumen asegura que las tablas se creen solas la primera vez
+      - ./init-db:/docker-entrypoint-initdb.d
+      - kipu_db_data:/var/lib/postgresql/data
+    networks:
+      - kipu
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: kipu_backend
+    ports:
+      - "3000:3000"
+    # Solo depende de 'db' si el servicio 'db' está activo
+    restart: always
+    environment:
+      # MAGIA: Si DATABASE_URL no está en el .env, usa el contenedor interno 'db' por defecto
+      - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:password123@db:5432/kipu_sri}
+      - ENCRYPTION_KEY
+      - STRIPE_SECRET_KEY
+      - STRIPE_WEBHOOK_SECRET
+      - MINIO_ROOT_USER
+      - MINIO_ROOT_PASSWORD
+      - MINIO_ENDPOINT
+      - MINIO_PORT
+      - MINIO_USE_SSL
+      - SMTP_HOST
+      - SMTP_PORT
+      - SMTP_USER
+      - SMTP_PASS
+      - SMTP_FROM
+    networks:
+      - kipu
+
+volumes:
+  kipu_db_data:
+
+networks:
+  kipu:
+    driver: bridge
+#    external: true

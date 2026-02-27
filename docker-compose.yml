@@ -44,12 +44,12 @@ services:
       - SMTP_PASS
       - SMTP_FROM
     networks:
-      - kipu
+      - red_infraestructura
 
 volumes:
   kipu_db_data:
 
 networks:
-  kipu:
-    driver: bridge
-#    external: true
+  red_infraestructura:
+    external: true
+

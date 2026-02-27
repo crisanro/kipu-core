@@ -16,7 +16,7 @@ const parser = new XMLParser({ ignoreAttributes: false });
 
 /**
  * @openapi
- * /api/structure/validate:
+ * /structure/validate:
  *   post:
  *     summary: Validar si existe una combinación de establecimiento y punto de emisión
  *     tags: [Structure]
@@ -82,7 +82,7 @@ router.post('/validate', apiKeyAuth, async (req, res) => {
 
 /**
  * @openapi
- * /api/integrations/status:
+ * /integrations/status:
  *   get:
  *     summary: Resumen completo del estado del emisor para sistemas externos
  *     tags: [Integrations]
@@ -174,7 +174,7 @@ router.get('/status', apiKeyAuth, async (req, res) => {
 
 /**
  * @openapi
- * /api/integrations/invoice:
+ * /integrations/invoice:
  *   post:
  *     summary: Genera, firma y envía una factura electrónica al SRI
  *     description: |
@@ -431,5 +431,6 @@ router.post('/invoice', apiKeyAuth, async (req, res) => {
         client.release();
     }
 });
+
 
 module.exports = router;

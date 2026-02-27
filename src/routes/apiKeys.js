@@ -6,7 +6,7 @@ const { authMiddleware: auth } = require('../middlewares/auth');
 
 /**
  * @openapi
- * /api/keys:
+ * /keys:
  *   get:
  *     summary: Listar mis API Keys (sin incluir la llave real, solo metadatos)
  *     tags: [API Keys]
@@ -51,7 +51,7 @@ router.get('/', auth, async (req, res) => {
 
 /**
  * @openapi
- * /api/keys:
+ * /keys:
  *   post:
  *     summary: Generar una nueva API Key
  *     tags: [API Keys]
@@ -124,7 +124,7 @@ router.post('/', auth, async (req, res) => {
 
 /**
  * @openapi
- * /api/keys/{id}:
+ * /keys/{id}:
  *   delete:
  *     summary: Revocar una API Key (desactivación permanente)
  *     tags: [API Keys]
@@ -166,5 +166,6 @@ router.delete('/:id', auth, async (req, res) => {
         res.status(500).json({ ok: false, error: error.message });
     }
 });
+
 
 module.exports = router;

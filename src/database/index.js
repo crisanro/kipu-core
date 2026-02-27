@@ -11,7 +11,7 @@ const pool = new Pool({
 });
 
 pool.on('connect', () => {
-   // console.log('[Database] Conexión establecida exitosamente');
+    console.log('[Database] Conexión establecida exitosamente');
 });
 
 pool.on('error', (err) => {
@@ -27,4 +27,5 @@ module.exports = {
     
     // Exportamos el pool completo por si se necesita en otro lado
     pool
+
 };

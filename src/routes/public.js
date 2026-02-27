@@ -5,7 +5,7 @@ const { minioClient } = require('../services/storageService');
 
 /**
  * @openapi
- * /api/public/pdf/{claveAcceso}:
+ * /public/pdf/{claveAcceso}:
  *   get:
  *     summary: Descargar RIDE (PDF) público
  *     tags: [Público]
@@ -51,7 +51,7 @@ router.get('/pdf/:claveAcceso', async (req, res) => {
 
 /**
  * @openapi
- * /api/public/xml/{claveAcceso}:
+ * /public/xml/{claveAcceso}:
  *   get:
  *     summary: Descargar XML autorizado
  *     tags: [Público]
@@ -88,5 +88,6 @@ router.get('/xml/:claveAcceso', async (req, res) => {
     res.status(404).send('Archivo no encontrado');
   }
 });
+
 
 module.exports = router;

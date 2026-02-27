@@ -49,9 +49,6 @@ app.use((req, res, next) => {
     next();
 });
 
-// --- MIDDLEWARES GLOBALES ---
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 
 // --- SUPER LOGGER DE DESARROLLO ---
 /*
@@ -161,15 +158,9 @@ mainRouter.use('/emitter', require('./routes/emitter'));
 // 4. Estructura (Establecimientos y Puntos de Emisión)
 mainRouter.use('/structure', require('./routes/structure'));
 
-// 5. Administración (Recargas de créditos vía n8n)
-mainRouter.use('/admin', require('./routes/admin'));
-
-// 5. Administración (Recargas de créditos vía n8n)
-mainRouter.use('/keys', require('./routes/apiKeys'));
-
-// 5. Administración (Recargas de créditos vía n8n)
-mainRouter.use('/integrations', require('./routes/integracion'));
-
+mainRouter.use('/admin', require('./routes/admin'));           // 5. Administración (Recargas vía n8n)
+mainRouter.use('/keys', require('./routes/apiKeys'));          // 6. Gestión de API Keys
+mainRouter.use('/integrations', require('./routes/integracion')); // 7. Integraciones externas
 // 6. Público (Descargas de PDF/XML sin token y Tracking)
 mainRouter.use('/public', require('./routes/public'));
 
@@ -208,11 +199,12 @@ app.listen(PORT, () => {
     ---------------------------------------------------
     🚀 BACKEND SRI MODULARIZADO LISTO
     ---------------------------------------------------
-    📚 Documentación: https://kipu.ec/api-docs
-    📚 Documentación: http://localhost:${PORT}/api-docs
+    📚 Documentación: https://core.kipu.ec/api/v1/api-docs
+    📚 Documentación: http://localhost:${PORT}/api/v1/api-docs
     ---------------------------------------------------
     `);
 });
 
 
 module.exports = app;
+

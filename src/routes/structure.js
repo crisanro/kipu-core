@@ -274,3 +274,71 @@ router.get('/tree', authMiddleware, async (req, res) => {
 });
 
 
+
+/**
+ * @openapi
+ * /structure/validate:
+ *   post:
+ *     summary: Validar si existe una combinación de establecimiento y punto de emisión
+ *     tags: [Structure]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [estab_codigo, punto_codigo]
+ *             properties:
+ *               estab_codigo: { type: string, example: "001" }
+ *               punto_codigo: { type: string, example: "001" }
+ *     responses:
+ *       200:
+ *         description: Combinación válida
+ *       404:
+ *         description: Combinación no encontrada
+ *       500:
+ *         description: Error interno
+ */
+router.post('/validate', authMiddleware, async (req, res) => {
+  const { estab_codigo, punto_codigo } = req.body;
+
+  if (!estab_codigo || !punto_codigo) {
+    return res.status(400).json({
+      ok: false,
+      error: 'estab_codigo y punto_codigo son requeridos.',
+    });
+  }
+
+  const query = `
+    SELECT
+      p.id,
+      p.secuencial_actual,
+      e.direccion
+    FROM puntos_emision p
+    JOIN establecimientos e ON p.establecimiento_id = e.id
+    WHERE e.emisor_id = $1
+      AND e.codigo    = $2
+      AND p.codigo    = $3
+  `;
+
+  try {
+    const { rows, rowCount } = await pool.query(query, [req.emisor_id, estab_codigo, punto_codigo]);
+
+    if (rowCount === 0) {
+      return res.status(404).json({
+        ok: false,
+        error: 'La combinación de establecimiento y punto de emisión no existe para este emisor.',
+      });
+    }
+
+    res.json({ ok: true, mensaje: 'Estructura válida', data: rows[0] });
+
+  } catch (error) {
+    console.error('[POST /structure/validate]', error.message);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+
+});
+

@@ -16,7 +16,7 @@ const parser = new XMLParser({ ignoreAttributes: false });
 
 /**
  * @openapi
- * /structure/validate:
+ * /integrations/validate:
  *   post:
  *     summary: Validar si existe una combinación de establecimiento y punto de emisión
  *     tags: [Integrations]
@@ -434,4 +434,5 @@ router.post('/invoice', apiKeyAuth, async (req, res) => {
 
 
 module.exports = router;
+
 

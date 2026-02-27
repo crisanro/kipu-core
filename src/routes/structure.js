@@ -5,7 +5,7 @@ const { authMiddleware } = require('../middlewares/auth');
 
 /**
  * @openapi
- * /api/structure/establishments:
+ * /structure/establishments:
  *   get:
  *     summary: Listar establecimientos del emisor
  *     tags: [Structure]
@@ -71,7 +71,7 @@ router.get('/establishments', authMiddleware, async (req, res) => {
 
 /**
  * @openapi
- * /api/structure/issuing-points:
+ * /structure/issuing-points:
  *   get:
  *     summary: Listar puntos de emisión del emisor
  *     tags: [Structure]
@@ -150,7 +150,7 @@ router.post('/establishments', authMiddleware, async (req, res) => {
 });
 
 /**
- * @route GET /api/structure/issuing-points
+ * @route GET /structure/issuing-points
  * Lista puntos de emisión filtrados por emisor (usando JOIN)
  */
 router.get('/issuing-points', authMiddleware, async (req, res) => {
@@ -170,7 +170,7 @@ router.get('/issuing-points', authMiddleware, async (req, res) => {
 });
 
 /**
- * @route POST /api/structure/issuing-points
+ * @route POST /structure/issuing-points
  * Crea un nuevo punto de emisión (Caja) para un local específico
  */
 router.post('/issuing-points', authMiddleware, async (req, res) => {
@@ -207,7 +207,7 @@ module.exports = router;
 
 /**
  * @openapi
- * /api/structure/tree:
+ * /structure/tree:
  *   get:
  *     summary: Obtener jerarquía completa (Establecimientos > Puntos de Emisión)
  *     tags: [Structure]
@@ -276,7 +276,7 @@ router.get('/tree', authMiddleware, async (req, res) => {
 
 /**
  * @openapi
- * /api/structure/validate:
+ * /structure/validate:
  *   post:
  *     summary: Validar si existe una combinación de establecimiento y punto de emisión
  *     tags: [Structure]
@@ -338,4 +338,5 @@ router.post('/validate', authMiddleware, async (req, res) => {
     console.error('[POST /structure/validate]', error.message);
     res.status(500).json({ ok: false, error: error.message });
   }
+
 });

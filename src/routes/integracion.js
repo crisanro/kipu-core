@@ -19,7 +19,7 @@ const parser = new XMLParser({ ignoreAttributes: false });
  * /structure/validate:
  *   post:
  *     summary: Validar si existe una combinación de establecimiento y punto de emisión
- *     tags: [Structure]
+ *     tags: [Integrations]
  *     security:
  *       - bearerAuth: []
  *     requestBody:
@@ -434,3 +434,4 @@ router.post('/invoice', apiKeyAuth, async (req, res) => {
 
 
 module.exports = router;
+

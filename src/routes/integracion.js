@@ -96,31 +96,96 @@ router.post('/validate', apiKeyAuth, async (req, res) => {
  *             schema:
  *               type: object
  *               properties:
- *                 ok:      { type: boolean, example: true }
+ *                 ok:
+ *                   type: boolean
+ *                   example: true
  *                 emisor:
  *                   type: object
  *                   properties:
- *                     ruc:          { type: string, example: "1234567890001" }
- *                     razon_social: { type: string }
- *                     ambiente:     { type: string, enum: [PRUEBAS, PRODUCCIÓN] }
+ *                     ruc:
+ *                       type: string
+ *                       example: "1234567890001"
+ *                     razon_social:
+ *                       type: string
+ *                       example: "Empresa Ejemplo S.A."
+ *                     nombre_comercial:
+ *                       type: string
+ *                       example: "Empresa Ejemplo"
+ *                     ambiente:
+ *                       type: string
+ *                       enum: [PRUEBAS, PRODUCCIÓN]
+ *                       example: "PRODUCCIÓN"
  *                     firma:
  *                       type: object
  *                       properties:
- *                         valida:      { type: boolean }
- *                         vencimiento: { type: string, format: date-time }
- *                 creditos: { type: number, example: 100 }
+ *                         valida:
+ *                           type: boolean
+ *                           example: true
+ *                         vencimiento:
+ *                           type: string
+ *                           format: date-time
+ *                           example: "2026-01-15T00:00:00.000Z"
+ *                 creditos:
+ *                   type: number
+ *                   example: 100
  *                 historial:
  *                   type: array
  *                   items:
  *                     type: object
  *                     properties:
- *                       id:           { type: string }
- *                       clave_acceso: { type: string }
- *                       estado:       { type: string }
- *                       total:        { type: number }
- *                       created_at:   { type: string, format: date-time }
+ *                       id:
+ *                         type: string
+ *                         example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+ *                       clave_acceso:
+ *                         type: string
+ *                         example: "2301202301179214673400110010010000000011234567811"
+ *                       fecha_emision:
+ *                         type: string
+ *                         format: date
+ *                         example: "2024-01-23"
+ *                       estado:
+ *                         type: string
+ *                         enum: [AUTORIZADO, RECHAZADO, PENDIENTE, ANULADO]
+ *                         example: "AUTORIZADO"
+ *                       identificacion_comprador:
+ *                         type: string
+ *                         example: "0987654321001"
+ *                       razon_social_comprador:
+ *                         type: string
+ *                         example: "Cliente Ejemplo S.A."
+ *                       total:
+ *                         type: number
+ *                         example: 150.75
+ *                       created_at:
+ *                         type: string
+ *                         format: date-time
+ *                         example: "2024-01-23T14:30:00.000Z"
+ *       404:
+ *         description: Emisor no encontrado
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                   example: false
+ *                 error:
+ *                   type: string
+ *                   example: "Emisor no encontrado"
  *       500:
  *         description: Error interno del servidor
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                   example: false
+ *                 error:
+ *                   type: string
+ *                   example: "Error interno del servidor"
  */
 router.get('/status', apiKeyAuth, async (req, res) => {
   try {
@@ -449,6 +514,7 @@ router.post('/invoice', apiKeyAuth, async (req, res) => {
 
 
 module.exports = router;
+
 
 
 

@@ -126,7 +126,6 @@ router.get('/status', apiKeyAuth, async (req, res) => {
   try {
     const query = `
       SELECT
-        e.id,
         e.ruc, 
         e.razon_social, 
         e.nombre_comercial, 
@@ -138,11 +137,14 @@ router.get('/status', apiKeyAuth, async (req, res) => {
           FROM (
             SELECT 
               id, 
-              clave_acceso, 
+              fecha_emision,           -- Nuevo campo solicitado
               estado, 
-              importe_total AS total, -- Corregido: era importe_total
+              identificacion_comprador, -- Nuevo campo solicitado
+              razon_social_comprador,   -- Nuevo campo solicitado
+              importe_total AS total,   -- Mapeado a 'total' para tu JSON
+              clave_acceso,
               created_at
-            FROM invoices -- Corregido: la tabla es 'invoices', no 'facturas'
+            FROM invoices 
             WHERE emisor_id = e.id
             ORDER BY created_at DESC
             LIMIT 20
@@ -170,8 +172,7 @@ router.get('/status', apiKeyAuth, async (req, res) => {
       emisor: {
         ruc:          data.ruc,
         razon_social: data.razon_social,
-        // Asumiendo que en tu DB 1 es PRUEBAS según tu lógica anterior
-        ambiente:      data.ambiente == '1' ? 'PRUEBAS' : 'PRODUCCIÓN', 
+        ambiente:      data.ambiente === 1 ? 'PRUEBAS' : 'PRODUCCIÓN', 
         firma: {
           valida:      firmaValida,
           vencimiento: data.p12_expiration,
@@ -448,6 +449,7 @@ router.post('/invoice', apiKeyAuth, async (req, res) => {
 
 
 module.exports = router;
+
 
 
 

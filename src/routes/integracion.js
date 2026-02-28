@@ -126,14 +126,23 @@ router.get('/status', apiKeyAuth, async (req, res) => {
   try {
     const query = `
       SELECT
-        e.ruc, e.razon_social, e.nombre_comercial, e.ambiente,
+        e.id,
+        e.ruc, 
+        e.razon_social, 
+        e.nombre_comercial, 
+        e.ambiente,
         e.p12_expiration,
         c.balance AS creditos_disponibles,
         (
           SELECT json_agg(last_docs)
           FROM (
-            SELECT id, clave_acceso, estado, total, created_at
-            FROM facturas
+            SELECT 
+              id, 
+              clave_acceso, 
+              estado, 
+              importe_total AS total, -- Corregido: era importe_total
+              created_at
+            FROM invoices -- Corregido: la tabla es 'invoices', no 'facturas'
             WHERE emisor_id = e.id
             ORDER BY created_at DESC
             LIMIT 20
@@ -145,6 +154,11 @@ router.get('/status', apiKeyAuth, async (req, res) => {
     `;
 
     const { rows } = await pool.query(query, [req.emisor_id]);
+    
+    if (rows.length === 0) {
+      return res.status(404).json({ ok: false, error: "Emisor no encontrado" });
+    }
+
     const data = rows[0];
 
     const firmaValida = data.p12_expiration
@@ -156,7 +170,8 @@ router.get('/status', apiKeyAuth, async (req, res) => {
       emisor: {
         ruc:          data.ruc,
         razon_social: data.razon_social,
-        ambiente:     data.ambiente === 1 ? 'PRUEBAS' : 'PRODUCCIÓN',
+        // Asumiendo que en tu DB 1 es PRUEBAS según tu lógica anterior
+        ambiente:      data.ambiente == '1' ? 'PRUEBAS' : 'PRODUCCIÓN', 
         firma: {
           valida:      firmaValida,
           vencimiento: data.p12_expiration,
@@ -170,7 +185,6 @@ router.get('/status', apiKeyAuth, async (req, res) => {
     res.status(500).json({ ok: false, error: error.message });
   }
 });
-
 
 /**
  * @openapi
@@ -434,5 +448,6 @@ router.post('/invoice', apiKeyAuth, async (req, res) => {
 
 
 module.exports = router;
+
 
 

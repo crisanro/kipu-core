@@ -4,6 +4,85 @@ const pool = require('../database/index');
 const { minioClient } = require('../services/storageService');
 const publicAuth = require('../middlewares/publicAuth');
 
+// ── Descarga PDF ──────────────────────────────────────────────────────────────
+/**
+ * @openapi
+ * /public/pdf/{claveAcceso}:
+ *   get:
+ *     summary: Descargar RIDE (PDF) público
+ *     tags: [Público]
+ *     parameters:
+ *       - in: path
+ *         name: claveAcceso
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Archivo PDF del comprobante
+ *       404:
+ *         description: Factura no encontrada
+ */
+router.get('/pdf/:claveAcceso', publicAuth, async (req, res) => {
+  const { claveAcceso } = req.params;
+  if (!/^\d{49}$/.test(claveAcceso)) return res.status(400).send('Clave inválida');
+  try {
+    const result = await pool.query(
+      "SELECT pdf_path FROM invoices WHERE clave_acceso = $1",
+      [claveAcceso]
+    );
+    if (result.rowCount === 0) return res.status(404).send('Factura no encontrada');
+    const [bucket, ...pathParts] = result.rows[0].pdf_path.split('/');
+    const stream = await minioClient.getObject(bucket, pathParts.join('/'));
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${claveAcceso}.pdf"`);
+    stream.pipe(res);
+  } catch (error) {
+    console.error('Error Public PDF:', error.message);
+    res.status(404).send('Archivo no encontrado');
+  }
+});
+
+// ── Descarga XML ──────────────────────────────────────────────────────────────
+/**
+ * @openapi
+ * /public/xml/{claveAcceso}:
+ *   get:
+ *     summary: Descargar XML autorizado
+ *     tags: [Público]
+ *     parameters:
+ *       - in: path
+ *         name: claveAcceso
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Archivo XML autorizado por el SRI
+ *       404:
+ *         description: Archivo no encontrado
+ */
+router.get('/xml/:claveAcceso', publicAuth, async (req, res) => {
+  const { claveAcceso } = req.params;
+  if (!/^\d{49}$/.test(claveAcceso)) return res.status(400).send('Clave inválida');
+  try {
+    const result = await pool.query(
+      "SELECT xml_path FROM invoices WHERE clave_acceso = $1",
+      [claveAcceso]
+    );
+    if (result.rowCount === 0) return res.status(404).send('Factura no encontrada');
+    const [bucket, ...pathParts] = result.rows[0].xml_path.split('/');
+    const stream = await minioClient.getObject(bucket, pathParts.join('/'));
+    res.setHeader('Content-Type', 'application/xml');
+    res.setHeader('Content-Disposition', `attachment; filename="${claveAcceso}.xml"`);
+    stream.pipe(res);
+  } catch (error) {
+    console.error('Error Public XML:', error.message);
+    res.status(404).send('Archivo no encontrado');
+  }
+});
+
+// ── Consulta pública ──────────────────────────────────────────────────────────
 /**
  * @openapi
  * /public/consultar/{claveAcceso}:
@@ -33,7 +112,6 @@ router.get('/consultar/:claveAcceso', publicAuth, async (req, res) => {
         i.clave_acceso, i.secuencial, i.fecha_emision, i.estado, i.mensajes_sri,
         i.razon_social_comprador, i.identificacion_comprador,
         i.importe_total, i.subtotal_iva, i.subtotal_0, i.valor_iva,
-        i.pdf_path, i.xml_path,
         e.razon_social as emisor_nombre, e.ruc as emisor_ruc
       FROM invoices i
       JOIN emisores e ON i.emisor_id = e.id
@@ -48,17 +126,7 @@ router.get('/consultar/:claveAcceso', publicAuth, async (req, res) => {
     }
     const factura = result.rows[0];
     switch (factura.estado) {
-      case 'AUTORIZADO': {
-        const [pdfBucket, ...pdfParts] = factura.pdf_path.split('/');
-        const [xmlBucket, ...xmlParts] = factura.xml_path.split('/');
-
-        const pdfUrl = await minioClient.presignedGetObject(pdfBucket, pdfParts.join('/'), 3600);
-        const xmlUrl = await minioClient.presignedGetObject(xmlBucket, xmlParts.join('/'), 3600);
-
-        // Reemplazar host interno de MinIO por el dominio público
-        const pdfPublic = pdfUrl.replace(/^https?:\/\/[^/]+/, 'https://s3.kipu.ec');
-        const xmlPublic = xmlUrl.replace(/^https?:\/\/[^/]+/, 'https://s3.kipu.ec');
-
+      case 'AUTORIZADO':
         return res.json({
           success: true,
           estado: 'AUTORIZADO',
@@ -71,12 +139,11 @@ router.get('/consultar/:claveAcceso', publicAuth, async (req, res) => {
             },
             totales: { total: factura.importe_total },
             links: {
-              pdf: pdfPublic,
-              xml: xmlPublic
+              pdf: `https://core.kipu.ec/api/v1/public/pdf/${claveAcceso}`,
+              xml: `https://core.kipu.ec/api/v1/public/xml/${claveAcceso}`
             }
           }
         });
-      }
       case 'RECIBIDO':
       case 'EN PROCESO':
         return res.status(200).json({

@@ -3,17 +3,18 @@ const router = express.Router();
 const pool = require('../database/index');
 const { authMiddleware } = require('../middlewares/auth');
 
+
 /**
  * @openapi
  * /structure/establishments:
  *   get:
- *     summary: Listar establecimientos del emisor
+ *     summary: Listar establecimientos con sus puntos de emisión
  *     tags: [Structure]
  *     security:
  *       - bearerAuth: []
  *     responses:
  *       200:
- *         description: Lista de establecimientos obtenida correctamente
+ *         description: Lista de establecimientos con puntos de emisión anidados
  *         content:
  *           application/json:
  *             schema:
@@ -25,49 +26,76 @@ const { authMiddleware } = require('../middlewares/auth');
  *                   type: array
  *                   items:
  *                     type: object
- *       500:
- *         description: Error interno del servidor
- *   post:
- *     summary: Crear un nuevo establecimiento
- *     tags: [Structure]
- *     security:
- *       - bearerAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required: [codigo]
- *             properties:
- *               codigo:
- *                 type: string
- *                 description: Código de 3 dígitos (ej. 001, 002)
- *               nombre_comercial:
- *                 type: string
- *               direccion:
- *                 type: string
- *     responses:
- *       201:
- *         description: Establecimiento creado correctamente
- *       400:
- *         description: Código inválido o ya registrado
+ *                     properties:
+ *                       id:
+ *                         type: integer
+ *                       codigo:
+ *                         type: string
+ *                         example: "001"
+ *                       nombre_comercial:
+ *                         type: string
+ *                       direccion:
+ *                         type: string
+ *                       puntos_emision:
+ *                         type: array
+ *                         items:
+ *                           type: object
+ *                           properties:
+ *                             id:
+ *                               type: integer
+ *                             codigo:
+ *                               type: string
+ *                               example: "001"
+ *                             descripcion:
+ *                               type: string
  *       500:
  *         description: Error interno del servidor
  */
 router.get('/establishments', authMiddleware, async (req, res) => {
     try {
         const result = await pool.query(
-            `SELECT * FROM establecimientos 
-             WHERE emisor_id = $1 
-             ORDER BY codigo ASC`,
+            `SELECT 
+                e.id            AS estab_id,
+                e.codigo        AS estab_codigo,
+                e.nombre_comercial,
+                e.direccion,
+                p.id            AS punto_id,
+                p.codigo        AS punto_codigo,
+                p.descripcion   AS punto_descripcion
+             FROM establecimientos e
+             LEFT JOIN puntos_emision p ON p.establecimiento_id = e.id
+             WHERE e.emisor_id = $1
+             ORDER BY e.codigo ASC, p.codigo ASC`,
             [req.emisor_id]
         );
-        res.json({ ok: true, data: result.rows });
+
+        // Agrupar puntos dentro de cada establecimiento
+        const map = new Map();
+        for (const row of result.rows) {
+            if (!map.has(row.estab_id)) {
+                map.set(row.estab_id, {
+                    id:              row.estab_id,
+                    codigo:          row.estab_codigo,
+                    nombre_comercial: row.nombre_comercial,
+                    direccion:       row.direccion,
+                    puntos_emision:  []
+                });
+            }
+            if (row.punto_id) {
+                map.get(row.estab_id).puntos_emision.push({
+                    id:          row.punto_id,
+                    codigo:      row.punto_codigo,
+                    descripcion: row.punto_descripcion
+                });
+            }
+        }
+
+        res.json({ ok: true, data: [...map.values()] });
     } catch (error) {
         res.status(500).json({ ok: false, error: error.message });
     }
 });
+
 
 /**
  * @openapi
@@ -149,25 +177,6 @@ router.post('/establishments', authMiddleware, async (req, res) => {
     }
 });
 
-/**
- * @route GET /structure/issuing-points
- * Lista puntos de emisión filtrados por emisor (usando JOIN)
- */
-router.get('/issuing-points', authMiddleware, async (req, res) => {
-    try {
-        const result = await pool.query(
-            `SELECT p.*, e.codigo as estab_codigo 
-             FROM puntos_emision p
-             JOIN establecimientos e ON p.establecimiento_id = e.id
-             WHERE e.emisor_id = $1
-             ORDER BY e.codigo ASC, p.codigo ASC`,
-            [req.emisor_id]
-        );
-        res.json({ ok: true, data: result.rows });
-    } catch (error) {
-        res.status(500).json({ ok: false, error: error.message });
-    }
-});
 
 /**
  * @route POST /structure/issuing-points
@@ -341,4 +350,5 @@ router.post('/validate', authMiddleware, async (req, res) => {
   }
 
 });
+
 

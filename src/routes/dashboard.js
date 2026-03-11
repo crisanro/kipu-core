@@ -206,3 +206,5 @@ router.get('/dashboard', authMiddleware, async (req, res) => {
         res.status(500).json({ ok: false, error: error.message });
     }
 });
+
+module.exports = router;

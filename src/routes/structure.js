@@ -55,13 +55,16 @@ router.get('/establishments', authMiddleware, async (req, res) => {
     try {
         const result = await pool.query(
             `SELECT 
-                e.id            AS estab_id,
-                e.codigo        AS estab_codigo,
+                e.id                AS estab_id,
+                e.codigo            AS estab_codigo,
                 e.nombre_comercial,
                 e.direccion,
-                p.id            AS punto_id,
-                p.codigo        AS punto_codigo,
-                p.descripcion   AS punto_descripcion
+                e.is_active         AS estab_activo,
+                p.id                AS punto_id,
+                p.codigo            AS punto_codigo,
+                p.nombre            AS punto_nombre,
+                p.secuencial_actual,
+                p.is_active         AS punto_activo
              FROM establecimientos e
              LEFT JOIN puntos_emision p ON p.establecimiento_id = e.id
              WHERE e.emisor_id = $1
@@ -69,7 +72,6 @@ router.get('/establishments', authMiddleware, async (req, res) => {
             [req.emisor_id]
         );
 
-        // Agrupar puntos dentro de cada establecimiento
         const map = new Map();
         for (const row of result.rows) {
             if (!map.has(row.estab_id)) {
@@ -78,14 +80,17 @@ router.get('/establishments', authMiddleware, async (req, res) => {
                     codigo:          row.estab_codigo,
                     nombre_comercial: row.nombre_comercial,
                     direccion:       row.direccion,
+                    is_active:       row.estab_activo,
                     puntos_emision:  []
                 });
             }
             if (row.punto_id) {
                 map.get(row.estab_id).puntos_emision.push({
-                    id:          row.punto_id,
-                    codigo:      row.punto_codigo,
-                    descripcion: row.punto_descripcion
+                    id:                row.punto_id,
+                    codigo:            row.punto_codigo,
+                    nombre:            row.punto_nombre,
+                    secuencial_actual: row.secuencial_actual,
+                    is_active:         row.punto_activo
                 });
             }
         }
@@ -95,7 +100,6 @@ router.get('/establishments', authMiddleware, async (req, res) => {
         res.status(500).json({ ok: false, error: error.message });
     }
 });
-
 
 /**
  * @openapi
@@ -350,5 +354,6 @@ router.post('/validate', authMiddleware, async (req, res) => {
   }
 
 });
+
 
 

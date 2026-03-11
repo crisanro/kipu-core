@@ -5,7 +5,7 @@ const { authMiddleware } = require('../middlewares/auth');
 
 /**
  * @openapi
- * /dashboard:
+ * /:
  *   get:
  *     summary: Dashboard principal del emisor
  *     tags: [Dashboard]
@@ -79,7 +79,7 @@ const { authMiddleware } = require('../middlewares/auth');
  *       500:
  *         description: Error interno del servidor
  */
-router.get('/dashboard', authMiddleware, async (req, res) => {
+router.get('/', authMiddleware, async (req, res) => {
     try {
         const { fecha_inicio, fecha_fin } = req.query;
 

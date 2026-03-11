@@ -157,7 +157,7 @@ mainRouter.use('/emitter', require('./routes/emitter'));
 
 // 4. Estructura (Establecimientos y Puntos de Emisión)
 mainRouter.use('/structure', require('./routes/structure'));
-
+mainRouter.use('/dashboard', require('./routes/dashboard'));
 mainRouter.use('/admin', require('./routes/admin'));           // 5. Administración (Recargas vía n8n)
 mainRouter.use('/keys', require('./routes/apiKeys'));          // 6. Gestión de API Keys
 mainRouter.use('/integrations', require('./routes/integracion')); // 7. Integraciones externas
@@ -207,4 +207,5 @@ app.listen(PORT, () => {
 
 
 module.exports = app;
+
 

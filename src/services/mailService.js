@@ -9,12 +9,16 @@ async function enviarComprobante(emailCliente, xmlBuffer, pdfBuffer, facturaInfo
 
     const transporter = nodemailer.createTransport({
         host: process.env.SMTP_HOST,
-        port: parseInt(process.env.SMTP_PORT || "465"),
-        secure: process.env.SMTP_PORT === "465",
+        port: parseInt(process.env.SMTP_PORT || "587"),
+        secure: false, // false para puerto 587. Nodemailer usará STARTTLS automáticamente.
         auth: {
             user: process.env.SMTP_USER,
             pass: process.env.SMTP_PASS,
         },
+        tls: {
+            // Esto asegura que la conexión sea segura
+            rejectUnauthorized: true 
+        }
     });
 
     const mailOptions = {

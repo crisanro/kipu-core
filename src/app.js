@@ -25,7 +25,6 @@ cron.schedule('*/20 * * * * *', async () => {
 
 // Job 2: Autorizar facturas RECIBIDAS (Cada minuto)
 cron.schedule('* * * * *', async () => {
-    //console.log('🤖 Revisando facturas pendientes de autorización...');
     try {
         await autorizarFacturasSRI();
     } catch (err) {

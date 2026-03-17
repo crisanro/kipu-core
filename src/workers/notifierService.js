@@ -17,7 +17,7 @@ async function notificarCambioEstado(factura, estado, detalle = null) {
             fecha: new Date().toISOString()
         }, { timeout: 5000 });
         
-        console.log(`[Webhook] Notificado UID ${factura.user_uid} sobre ${factura.clave_acceso}`);
+        //console.log(`[Webhook] Notificado UID ${factura.user_uid} sobre ${factura.clave_acceso}`);
     } catch (e) {
         console.error(`[Webhook Error]:`, e.message);
     }

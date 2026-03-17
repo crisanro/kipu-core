@@ -7,8 +7,14 @@ const { authMiddleware } = require('../middlewares/auth');
  * @openapi
  * /:
  *   get:
- *     summary: Dashboard principal del emisor
- *     tags: [Dashboard]
+ *     summary: Obtener datos del dashboard
+ *     description: |
+ *       Retorna en una sola llamada el estado de salud del emisor, el resumen financiero
+ *       y el listado de facturas dentro del rango de fechas indicado.
+ *       Todas las queries se ejecutan en paralelo para minimizar latencia.
+ *       Si el emisor no tiene configuración inicial, devuelve datos vacíos con `usuario_nuevo: true`.
+ *     tags:
+ *       - Dashboard
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -18,17 +24,19 @@ const { authMiddleware } = require('../middlewares/auth');
  *         schema:
  *           type: string
  *           format: date
- *           example: "2025-01-01"
+ *           example: "2024-01-01"
+ *         description: "Fecha de inicio del rango (inclusive)."
  *       - in: query
  *         name: fecha_fin
  *         required: true
  *         schema:
  *           type: string
  *           format: date
- *           example: "2025-02-14"
+ *           example: "2024-12-31"
+ *         description: "Fecha de fin del rango (inclusive)."
  *     responses:
  *       200:
- *         description: Dashboard obtenido correctamente
+ *         description: Datos del dashboard cargados correctamente
  *         content:
  *           application/json:
  *             schema:
@@ -36,175 +44,246 @@ const { authMiddleware } = require('../middlewares/auth');
  *               properties:
  *                 ok:
  *                   type: boolean
+ *                   example: true
  *                 data:
  *                   type: object
  *                   properties:
  *                     health:
  *                       type: object
+ *                       description: "Estado de configuración del emisor."
  *                       properties:
  *                         ruc:
  *                           type: boolean
+ *                           description: "true si el emisor tiene RUC registrado."
+ *                           example: true
  *                         ambiente_produccion:
  *                           type: boolean
- *                         firma_electronica:
+ *                           description: "true si el emisor está en ambiente de producción (ambiente = 2)."
+ *                           example: false
+ *                         firma_configurada:
  *                           type: boolean
+ *                           description: "true si tiene un certificado P12 subido."
+ *                           example: true
  *                         firma_vigente:
  *                           type: boolean
+ *                           description: "true si el certificado P12 no ha expirado."
+ *                           example: true
  *                         firma_alerta:
  *                           type: string
  *                           nullable: true
- *                         tiene_establecimiento:
+ *                           description: "Mensaje de alerta sobre el certificado. Null si está vigente y sin problemas."
+ *                           example: "Firma próxima a caducar (12 días)"
+ *                         establecimientos_configurados:
  *                           type: boolean
- *                         tiene_punto_emision:
+ *                           description: "true si el emisor tiene al menos un establecimiento."
+ *                           example: true
+ *                         puntos_emision_configurados:
  *                           type: boolean
+ *                           description: "true si el emisor tiene al menos un punto de emisión."
+ *                           example: true
+ *                         creditos_disponibles:
+ *                           type: number
+ *                           description: "Saldo actual de créditos del emisor."
+ *                           example: 10
+ *                         usuario_nuevo:
+ *                           type: boolean
+ *                           description: "true si el token no tiene un emisor vinculado aún."
+ *                           example: false
+ *                         tiene_api_key:
+ *                           type: boolean
+ *                           description: "true si el emisor tiene al menos una API key activa."
+ *                           example: true
  *                     resumen:
  *                       type: object
+ *                       description: "Resumen financiero del período solicitado."
  *                       properties:
  *                         total_facturas:
  *                           type: integer
+ *                           example: 38
  *                         subtotal_iva:
  *                           type: number
+ *                           format: float
+ *                           example: 1250.00
  *                         subtotal_0:
  *                           type: number
+ *                           format: float
+ *                           example: 300.00
  *                         valor_iva:
  *                           type: number
+ *                           format: float
+ *                           example: 150.00
  *                         importe_total:
  *                           type: number
+ *                           format: float
+ *                           example: 1700.00
  *                     facturas:
  *                       type: array
+ *                       description: "Últimas 50 facturas del período ordenadas por fecha de creación descendente."
  *                       items:
  *                         type: object
+ *                         properties:
+ *                           id:
+ *                             type: integer
+ *                             example: 101
+ *                           secuencial:
+ *                             type: string
+ *                             example: "000000001"
+ *                           estado:
+ *                             type: string
+ *                             example: "AUTORIZADA"
+ *                           razon_social_comprador:
+ *                             type: string
+ *                             example: "Juan Pérez"
+ *                           importe_total:
+ *                             type: number
+ *                             format: float
+ *                             example: 112.00
+ *                           fecha_emision:
+ *                             type: string
+ *                             format: date
+ *                             example: "2024-06-15"
  *       400:
- *         description: Fechas inválidas o rango mayor a 45 días
+ *         description: Parámetros de fecha faltantes
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                   example: false
+ *                 error:
+ *                   type: string
+ *                   example: "fecha_inicio y fecha_fin son requeridas"
+ *       401:
+ *         description: Token de Firebase inválido o ausente
  *       500:
  *         description: Error interno del servidor
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                   example: false
+ *                 error:
+ *                   type: string
+ *                   example: "Error al cargar el dashboard"
  */
 router.get('/', authMiddleware, async (req, res) => {
     try {
         const { fecha_inicio, fecha_fin } = req.query;
+        const emisor_id = req.emisor_id;
 
-        // --- Validación de fechas ---
         if (!fecha_inicio || !fecha_fin) {
             return res.status(400).json({ ok: false, error: 'fecha_inicio y fecha_fin son requeridas' });
         }
 
-        const inicio = new Date(fecha_inicio);
-        const fin    = new Date(fecha_fin);
-
-        if (isNaN(inicio) || isNaN(fin)) {
-            return res.status(400).json({ ok: false, error: 'Formato de fecha inválido, use YYYY-MM-DD' });
-        }
-
-        if (fin < inicio) {
-            return res.status(400).json({ ok: false, error: 'fecha_fin no puede ser menor a fecha_inicio' });
-        }
-
-        const diffDays = (fin - inicio) / (1000 * 60 * 60 * 24);
-        if (diffDays > 45) {
-            return res.status(400).json({ ok: false, error: 'El rango máximo permitido es de 45 días' });
-        }
-
-        // --- Queries en paralelo ---
-        const [emisorResult, estabResult, facturasResult] = await Promise.all([
-
-            // 1. Datos del emisor
-            pool.query(
-                `SELECT ruc, ambiente, p12_path, p12_expiration
-                 FROM emisores
-                 WHERE id = $1`,
-                [req.emisor_id]
-            ),
-
-            // 2. Conteo de establecimientos y puntos de emisión
-            pool.query(
-                `SELECT
-                    COUNT(DISTINCT e.id)  AS total_establecimientos,
-                    COUNT(DISTINCT p.id)  AS total_puntos
-                 FROM establecimientos e
-                 LEFT JOIN puntos_emision p ON p.establecimiento_id = e.id
-                 WHERE e.emisor_id = $1`,
-                [req.emisor_id]
-            ),
-
-            // 3. Facturas en el rango
-            pool.query(
-                `SELECT
-                    i.id,
-                    i.secuencial,
-                    i.clave_acceso,
-                    i.fecha_emision,
-                    i.estado,
-                    i.identificacion_comprador,
-                    i.razon_social_comprador,
-                    i.subtotal_iva,
-                    i.subtotal_0,
-                    i.valor_iva,
-                    i.importe_total,
-                    e.codigo  AS estab_codigo,
-                    p.codigo  AS punto_codigo
-                 FROM invoices i
-                 JOIN puntos_emision p  ON i.punto_emision_id = p.id
-                 JOIN establecimientos e ON p.establecimiento_id = e.id
-                 WHERE i.emisor_id    = $1
-                   AND i.fecha_emision BETWEEN $2 AND $3
-                 ORDER BY i.fecha_emision DESC, i.secuencial DESC`,
-                [req.emisor_id, fecha_inicio, fecha_fin]
-            )
-        ]);
-
-        // --- Health checks del emisor ---
-        const emisor = emisorResult.rows[0];
-        const estab  = estabResult.rows[0];
-        const hoy    = new Date();
-        hoy.setHours(0, 0, 0, 0);
-
-        let firma_vigente = false;
-        let firma_alerta  = null;
-
-        if (emisor.p12_expiration) {
-            const expiracion = new Date(emisor.p12_expiration);
-            firma_vigente = expiracion > hoy;
-
-            if (firma_vigente) {
-                const diasRestantes = Math.ceil((expiracion - hoy) / (1000 * 60 * 60 * 24));
-                if (diasRestantes <= 30) {
-                    firma_alerta = `Tu firma electrónica caduca en ${diasRestantes} día${diasRestantes === 1 ? '' : 's'}`;
+        // Helper con reintento automático para queries que pueden fallar por ECONNRESET
+        const queryConReintento = async (text, params, fallback) => {
+            try {
+                return await pool.query(text, params);
+            } catch (err) {
+                if (err.code === 'ECONNRESET' || err.code === 'ECONNREFUSED') {
+                    console.warn('⚠️ Reintentando query tras ECONNRESET...');
+                    await new Promise(r => setTimeout(r, 200)); // espera 200ms
+                    return await pool.query(text, params);      // un solo reintento
                 }
-            } else {
-                firma_alerta = 'Tu firma electrónica ha caducado';
+                if (fallback !== undefined) return fallback;
+                throw err;
             }
-        }
-
-        const health = {
-            ruc:                  !!emisor.ruc,
-            ambiente_produccion:  emisor.ambiente === '2',
-            firma_electronica:    !!emisor.p12_path,
-            firma_vigente,
-            firma_alerta,
-            tiene_establecimiento: parseInt(estab.total_establecimientos) > 0,
-            tiene_punto_emision:   parseInt(estab.total_puntos) > 0,
         };
 
-        // --- Resumen de totales ---
-        const facturas = facturasResult.rows;
-        const resumen = facturas.reduce((acc, f) => {
-            acc.subtotal_iva  += parseFloat(f.subtotal_iva  || 0);
-            acc.subtotal_0    += parseFloat(f.subtotal_0    || 0);
-            acc.valor_iva     += parseFloat(f.valor_iva     || 0);
-            acc.importe_total += parseFloat(f.importe_total || 0);
-            return acc;
-        }, { total_facturas: facturas.length, subtotal_iva: 0, subtotal_0: 0, valor_iva: 0, importe_total: 0 });
+        const [emisorResult, healthCheckResult, resumenResult, facturasResult, apiKeysResult] = await Promise.all([
+            // 1. Datos básicos del emisor y créditos
+            emisor_id ? queryConReintento(
+                `SELECT e.ruc, e.ambiente, e.p12_path, e.p12_expiration, c.balance 
+                 FROM emisores e LEFT JOIN user_credits c ON c.emisor_id = e.id WHERE e.id = $1`,
+                [emisor_id]
+            ) : { rows: [] },
 
-        // Redondear a 2 decimales
-        for (const key of ['subtotal_iva', 'subtotal_0', 'valor_iva', 'importe_total']) {
-            resumen[key] = Math.round(resumen[key] * 100) / 100;
+            // 2. Infraestructura
+            emisor_id ? queryConReintento(
+                `SELECT 
+                    (SELECT COUNT(*) FROM establecimientos WHERE emisor_id = $1) as total_estab,
+                    (SELECT COUNT(*) FROM puntos_emision p 
+                     JOIN establecimientos e ON p.establecimiento_id = e.id WHERE e.emisor_id = $1) as total_puntos`,
+                [emisor_id]
+            ) : { rows: [{ total_estab: 0, total_puntos: 0 }] },
+
+            // 3. Resumen financiero
+            emisor_id ? queryConReintento(
+                `SELECT COUNT(id) as total_facturas, COALESCE(SUM(subtotal_iva), 0) as subtotal_iva,
+                 COALESCE(SUM(subtotal_0), 0) as subtotal_0, COALESCE(SUM(valor_iva), 0) as valor_iva,
+                 COALESCE(SUM(importe_total), 0) as importe_total
+                 FROM invoices WHERE emisor_id = $1 AND fecha_emision BETWEEN $2 AND $3`,
+                [emisor_id, fecha_inicio, fecha_fin]
+            ) : { rows: [{ total_facturas: 0, subtotal_iva: 0, subtotal_0: 0, valor_iva: 0, importe_total: 0 }] },
+
+            // 4. Listado de facturas
+            emisor_id ? queryConReintento(
+                `SELECT id, secuencial, estado, razon_social_comprador, importe_total, fecha_emision
+                 FROM invoices WHERE emisor_id = $1 AND fecha_emision BETWEEN $2 AND $3
+                 ORDER BY created_at DESC LIMIT 50`,
+                [emisor_id, fecha_inicio, fecha_fin]
+            ) : { rows: [] },
+
+            // 5. API Keys
+            emisor_id ? queryConReintento(
+                `SELECT COUNT(*) as total_keys FROM api_keys WHERE emisor_id = $1 AND revoked = false`,
+                [emisor_id]
+            ) : { rows: [{ total_keys: 0 }] }
+        ]);
+
+        const emisor = emisorResult.rows[0] || {};
+        const healthStats = healthCheckResult.rows[0];
+        const resumen = resumenResult.rows[0];
+        const totalKeys = parseInt(apiKeysResult.rows[0].total_keys);
+
+        const hoy = new Date();
+        const expiracion = emisor.p12_expiration ? new Date(emisor.p12_expiration) : null;
+        let firma_vigente = false;
+        let firma_alerta = emisor_id ? null : "Configuración inicial pendiente";
+
+        if (expiracion) {
+            firma_vigente = expiracion > hoy;
+            const diasRestantes = Math.ceil((expiracion - hoy) / (1000 * 60 * 60 * 24));
+            if (diasRestantes <= 0) firma_alerta = "Firma caducada";
+            else if (diasRestantes <= 30) firma_alerta = `Firma próxima a caducar (${diasRestantes} días)`;
         }
 
-        res.json({ ok: true, data: { health, resumen, facturas } });
+        res.json({
+            ok: true,
+            data: {
+                health: {
+                    ruc: !!emisor.ruc,
+                    ambiente_produccion: emisor.ambiente === 2,
+                    firma_configurada: !!emisor.p12_path,
+                    firma_vigente,
+                    firma_alerta,
+                    establecimientos_configurados: parseInt(healthStats.total_estab) > 0,
+                    puntos_emision_configurados: parseInt(healthStats.total_puntos) > 0,
+                    creditos_disponibles: emisor.balance || 0,
+                    usuario_nuevo: !emisor_id,
+                    tiene_api_key: totalKeys > 0
+                },
+                resumen: {
+                    total_facturas: parseInt(resumen.total_facturas),
+                    subtotal_iva: parseFloat(resumen.subtotal_iva),
+                    subtotal_0: parseFloat(resumen.subtotal_0),
+                    valor_iva: parseFloat(resumen.valor_iva),
+                    importe_total: parseFloat(resumen.importe_total)
+                },
+                facturas: facturasResult.rows
+            }
+        });
 
     } catch (error) {
-        res.status(500).json({ ok: false, error: error.message });
+        console.error("Dashboard Error:", error);
+        res.status(500).json({ ok: false, error: 'Error al cargar el dashboard' });
     }
 });
+
 
 module.exports = router;

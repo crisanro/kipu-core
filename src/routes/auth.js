@@ -2,66 +2,250 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../database/index');
 const { authMiddleware } = require('../middlewares/auth');
+const authController = require("../utils/controllers");
+const { minioClient } = require('../services/storageService');
+const admin = require('../config/firebase');
+
 
 /**
  * @openapi
- * /auth/sync:
- *  post:
- *      summary: Sincronizar usuario de Firebase (Paso 1 del Registro)
- *      description: Guarda el UID y correo en la tabla profiles. No pide RUC.
- *      tags: [Autenticación]
- *      security:
- *          - bearerAuth: []
- *      responses:
- *          200:
- *              description: Perfil sincronizado. Indica si necesita completar el RUC.
+ * /auth/send-verification:
+ *   post:
+ *     summary: Reenviar correo de verificación
+ *     description: Genera un link de verificación con Firebase y lo envía al correo del usuario autenticado.
+ *     tags: [Autenticación]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Correo enviado exitosamente
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Correo de verificación enviado"
+ *       401:
+ *         description: Token inválido o no enviado
+ *       500:
+ *         description: Error enviando el correo
  */
-router.post('/sync', authMiddleware, async (req, res) => {
-    // Gracias al authMiddleware, req.user siempre trae el uid y email validados por Firebase
-    const { uid, email } = req.user; 
+router.post("/send-verification", authMiddleware, authController.sendVerification);
+
+
+/**
+ * @openapi
+ * /auth/reset:
+ *   post:
+ *     summary: Enviar correo de recuperación de contraseña
+ *     description: Genera un link de reset con Firebase y lo envía al correo indicado. No requiere sesión activa.
+ *     tags: [Autenticación]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - email
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 example: "usuario@ejemplo.com"
+ *     responses:
+ *       200:
+ *         description: Correo enviado exitosamente
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Correo de recuperación enviado"
+ *       400:
+ *         description: Email no proporcionado
+ *       500:
+ *         description: Error enviando el correo
+ */
+router.post("/reset", authController.sendResetPassword);
+
+
+/**
+ * @openapi
+ * /auth/nuke:
+ *   delete:
+ *     summary: Eliminar cuenta completamente
+ *     description: |
+ *       Borra de forma permanente e irreversible todos los datos del emisor autenticado.
+ *       El proceso elimina en orden:
+ *       1. Guarda un registro en `leads_ex_usuarios` antes de borrar.
+ *       2. Borra en cascada manual: logs, transacciones, facturas, API keys,
+ *          puntos de emisión, establecimientos, créditos y perfil.
+ *       3. Elimina todos los archivos del emisor en MinIO (XMLs, PDFs y P12).
+ *       4. Elimina el usuario de Firebase Auth.
+ *
+ *       **Esta operación no tiene vuelta atrás.**
+ *     tags:
+ *       - Emisor
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Cuenta eliminada completamente
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                   example: true
+ *                 mensaje:
+ *                   type: string
+ *                   example: "Cuenta eliminada completamente. Datos borrados de DB, S3 y Firebase."
+ *       400:
+ *         description: El token no tiene un emisor vinculado
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                   example: false
+ *                 mensaje:
+ *                   type: string
+ *                   example: "No hay un emisor vinculado para borrar."
+ *       401:
+ *         description: Token de Firebase inválido o ausente
+ *       500:
+ *         description: Error crítico durante el proceso de eliminación. La transacción se revierte pero los archivos de MinIO o Firebase pueden haber quedado en estado inconsistente.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                   example: false
+ *                 error:
+ *                   type: string
+ *                   example: "Error en el proceso de eliminación."
+ */
+router.delete('/nuke', authMiddleware, async (req, res) => {
+    const emisor_id = req.emisor_id; // Puede ser null si no hizo onboarding
+    const firebase_uid = req.user.uid;
 
     const client = await pool.connect();
-    
     try {
         await client.query('BEGIN');
 
-        // 1. Insertamos el perfil. Si ya existe (porque hizo login de nuevo), no hace nada.
-        await client.query(`
-            INSERT INTO profiles (id, email, role) 
-            VALUES ($1, $2, 'admin')
-            ON CONFLICT (id) DO NOTHING
-        `, [uid, email]);
+        // ── BLOQUE EMISOR (solo si hizo onboarding) ──────────────────────────
+        if (emisor_id) {
+            // 1. Guardar en leads antes de borrar
+            const infoRes = await client.query(`
+                SELECT 
+                    e.ruc, e.razon_social, e.created_at as fecha_reg,
+                    p.full_name, p.email,
+                    c.balance,
+                    (SELECT COUNT(*) FROM invoices WHERE emisor_id = e.id) as total_facturas
+                FROM emisores e
+                LEFT JOIN profiles p ON p.emisor_id = e.id
+                LEFT JOIN user_credits c ON c.emisor_id = e.id
+                WHERE e.id = $1
+            `, [emisor_id]);
+
+            const info = infoRes.rows[0];
+
+            if (info) {
+                await client.query(`
+                    INSERT INTO leads_ex_usuarios 
+                    (ruc, razon_social, email, full_name, ultimo_balance, total_facturas_emitidas, fecha_registro_original)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                `, [info.ruc, info.razon_social, info.email, info.full_name, 
+                    info.balance, info.total_facturas, info.fecha_reg]);
+
+                // 2. Limpiar archivos en MinIO (silencioso si no hay nada)
+                try {
+                    const objectsList = [];
+                    const stream = minioClient.listObjectsV2('invoices', info.ruc, true);
+                    for await (const obj of stream) objectsList.push(obj.name);
+                    if (objectsList.length > 0) {
+                        await minioClient.removeObjects('invoices', objectsList);
+                    }
+                } catch (minioErr) {
+                    console.warn('⚠️ MinIO cleanup omitido:', minioErr.message);
+                }
+
+                // 3. Borrar P12 si existe
+                try {
+                    if (info.p12_path) {
+                        const [p12Bucket, ...p12Path] = info.p12_path.split('/');
+                        await minioClient.removeObject(p12Bucket, p12Path.join('/'));
+                    }
+                } catch (p12Err) {
+                    console.warn('⚠️ P12 cleanup omitido:', p12Err.message);
+                }
+            }
+
+            // 4. Borrado en cascada en DB
+            await client.query('DELETE FROM transaction_logs WHERE target_emisor_id = $1', [emisor_id]);
+            await client.query('DELETE FROM credit_transactions WHERE emisor_id = $1', [emisor_id]);
+            await client.query('DELETE FROM invoices WHERE emisor_id = $1', [emisor_id]);
+            await client.query('DELETE FROM api_keys WHERE emisor_id = $1', [emisor_id]);
+            await client.query(`
+                DELETE FROM puntos_emision 
+                WHERE establecimiento_id IN (SELECT id FROM establecimientos WHERE emisor_id = $1)
+            `, [emisor_id]);
+            await client.query('DELETE FROM establecimientos WHERE emisor_id = $1', [emisor_id]);
+            await client.query('DELETE FROM user_credits WHERE emisor_id = $1', [emisor_id]);
+        }
+
+        // ── SIEMPRE SE EJECUTA ────────────────────────────────────────────────
+        // 5. Borrar perfil (existe aunque no haya emisor)
+        await client.query('DELETE FROM profiles WHERE firebase_uid = $1', [firebase_uid]);
+
+        // 6. Eliminar de Firebase Auth
+        await admin.auth().deleteUser(firebase_uid);
 
         await client.query('COMMIT');
 
-        // 2. Verificamos si este usuario ya tiene una empresa (emisor_id) vinculada
-        const profileRes = await pool.query('SELECT emisor_id FROM profiles WHERE id = $1', [uid]);
-        const emisorId = profileRes.rows[0].emisor_id;
-
-        // 3. Le respondemos al frontend diciéndole qué pantalla debe mostrar
-        res.status(200).json({ 
+        res.json({ 
             ok: true, 
-            mensaje: "Perfil sincronizado correctamente.",
-            // Esta variable es ORO para tu frontend:
-            requireOnboarding: emisorId === null 
+            mensaje: "Cuenta eliminada completamente." 
         });
 
     } catch (error) {
         await client.query('ROLLBACK');
-        console.error('Error en sync:', error);
-        res.status(500).json({ ok: false, error: 'Error al sincronizar el perfil' });
+        console.error("CRITICAL ERROR EN BORRADO TOTAL:", error);
+        res.status(500).json({ ok: false, error: "Error en el proceso de eliminación." });
     } finally {
         client.release();
     }
 });
 
+
 /**
  * @openapi
- * /auth/activar-ruc:
+ * /integrations/verify-pin:
  *   post:
- *     summary: Activar cuenta de facturación (Onboarding Paso 2)
- *     description: Registra la empresa, crea el establecimiento 001 y punto de emisión 100, y lo vincula al usuario de Firebase.
- *     tags: [Auth]
+ *     summary: Verificar PIN de validación
+ *     description: |
+ *       Valida el PIN ingresado por el usuario contra el challenge activo.
+ *       El PIN se consume al verificarse — no puede usarse dos veces.
+ *       Si el `tipo_accion` del challenge es `VALIDAR_WS`, actualiza automáticamente
+ *       el teléfono del perfil y lo marca como verificado.
+ *     tags:
+ *       - Integraciones
  *     security:
  *       - bearerAuth: []
  *     requestBody:
@@ -71,109 +255,95 @@ router.post('/sync', authMiddleware, async (req, res) => {
  *           schema:
  *             type: object
  *             required:
- *               - ruc
- *               - razon_social
- *               - direccion_matriz
+ *               - pin
  *             properties:
- *               ruc:
+ *               pin:
  *                 type: string
- *                 example: "1712345678001"
- *               razon_social:
- *                 type: string
- *                 example: "EMPRESA DE PRUEBA S.A."
- *               nombre_comercial:
- *                 type: string
- *                 example: "Mi Tienda"
- *               direccion_matriz:
- *                 type: string
- *                 example: "Av. Siempre Viva 123"
- *               contribuyente_especial:
- *                 type: string
- *                 example: "5368"
- *               obligado_contabilidad:
- *                 type: string
- *                 example: "SI"
+ *                 description: "PIN de 6 dígitos recibido por WhatsApp."
+ *                 example: "482719"
  *     responses:
- *       201:
- *         description: Empresa activada exitosamente
+ *       200:
+ *         description: PIN validado correctamente
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                   example: true
+ *                 mensaje:
+ *                   type: string
+ *                   example: "Validación exitosa."
+ *                 tipo_accion:
+ *                   type: string
+ *                   description: "Acción que fue validada con este PIN."
+ *                   example: "VALIDAR_WS"
+ *       400:
+ *         description: PIN incorrecto o expirado
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                   example: false
+ *                 mensaje:
+ *                   type: string
+ *                   example: "PIN incorrecto o expirado."
+ *       401:
+ *         description: Token de Firebase inválido o ausente
+ *       500:
+ *         description: Error interno del servidor
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                   example: false
+ *                 error:
+ *                   type: string
+ *                   example: "error message"
  */
-router.post('/activar-ruc', authMiddleware, async (req, res) => {
-    // NOTA: req.user vendrá de nuestro middleware de Firebase (lo configuraremos en el siguiente paso)
-    // Por ahora, simularemos que ya lo tenemos para que veas la lógica.
-    const uid = req.user.uid; 
+router.post('/verify-pin', authMiddleware, async (req, res) => {
+    const { pin } = req.body;
     const email = req.user.email;
 
-    const { 
-        ruc, 
-        razon_social, 
-        nombre_comercial, 
-        direccion_matriz, 
-        contribuyente_especial, 
-        obligado_contabilidad 
-    } = req.body;
-
-    // Validación básica
-    if (!ruc || ruc.length !== 13) return res.status(400).json({ error: 'El RUC debe tener 13 dígitos.' });
-    if (!razon_social || !direccion_matriz) return res.status(400).json({ error: 'Razón Social y Dirección son obligatorias.' });
-
-    const client = await pool.connect();
-
     try {
-        await client.query('BEGIN'); // Inicia la transacción
+        const result = await pool.query(`
+            SELECT * FROM auth_challenges 
+            WHERE email = $1 AND pin = $2 AND expires_at > NOW()
+        `, [email, pin]);
 
-        // 1. Verificar si el RUC ya existe para evitar errores
-        const rucCheck = await client.query('SELECT id FROM emisores WHERE ruc = $1', [ruc]);
-        if (rucCheck.rowCount > 0) {
-            return res.status(409).json({ error: 'Este RUC ya está registrado en el sistema.' });
+        if (result.rowCount === 0) {
+            return res.status(400).json({ ok: false, mensaje: "PIN incorrecto o expirado." });
         }
 
-        // 2. Crear la Empresa (Emisor)
-        const emisorResult = await client.query(
-            `INSERT INTO emisores 
-            (ruc, razon_social, nombre_comercial, direccion_matriz, contribuyente_especial, obligado_contabilidad) 
-            VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-            [ruc, razon_social, nombre_comercial, direccion_matriz, contribuyente_especial, obligado_contabilidad || 'NO']
-        );
-        const emisorId = emisorResult.rows[0].id;
+        const challenge = result.rows[0];
 
-        // 3. Crear Local Principal (001) y Caja (100) obligatorios para el SRI
-        const localResult = await client.query(
-            `INSERT INTO establecimientos (emisor_id, codigo, nombre_comercial, direccion) 
-             VALUES ($1, '001', 'Matriz', $2) RETURNING id`,
-            [emisorId, direccion_matriz]
-        );
-        const localId = localResult.rows[0].id;
+        // ACCIÓN EXITOSA:
+        // Aquí puedes marcar el teléfono como verificado si el tipo_accion era ese
+        if (challenge.tipo_accion === 'VALIDAR_WS') {
+            await pool.query(
+                'UPDATE profiles SET phone_verified = true, phone = $1 WHERE email = $2', 
+                [challenge.whatsapp_number, email]
+            );
+        }
 
-        await client.query(
-            `INSERT INTO puntos_emision (establecimiento_id, codigo, secuencial_actual) 
-             VALUES ($1, '100', 0)`,
-            [localId]
-        );
+        // Borrar el PIN para que no se use dos veces
+        await pool.query('DELETE FROM auth_challenges WHERE id = $1', [challenge.id]);
 
-        // 4. Crear el Perfil del usuario y vincularlo a la empresa
-        // Usamos UPSERT (ON CONFLICT) por si el usuario ya se había guardado antes sin empresa
-        await client.query(
-            `INSERT INTO profiles (id, emisor_id, email, role) 
-             VALUES ($1, $2, $3, 'admin')
-             ON CONFLICT (id) DO UPDATE SET emisor_id = EXCLUDED.emisor_id`,
-            [uid, emisorId, email]
-        );
-
-        // 5. Regalar 50 facturas de cortesía (Opcional, genial para marketing)
-        await client.query(
-            `INSERT INTO user_credits (emisor_id, balance) VALUES ($1, 50)`,
-            [emisorId]
-        );
-
-        await client.query('COMMIT'); // Guarda todos los cambios juntos
-        res.status(201).json({ message: 'RUC activado exitosamente. Ya puedes facturar.', emisorId });
+        res.json({ 
+            ok: true, 
+            mensaje: "Validación exitosa.",
+            tipo_accion: challenge.tipo_accion 
+        });
 
     } catch (error) {
-        await client.query('ROLLBACK'); // Si algo falla, cancela todo para no dejar datos a medias
-        console.error('Error activando RUC:', error.message);
-        res.status(500).json({ error: 'Ocurrió un error al activar la cuenta.' });
-    } finally {
-        client.release();
+        res.status(500).json({ ok: false, error: error.message });
     }
 });
 

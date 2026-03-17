@@ -9,7 +9,8 @@ const { authMiddleware } = require('../middlewares/auth');
  * /structure/establishments:
  *   get:
  *     summary: Listar establecimientos con sus puntos de emisión
- *     tags: [Structure]
+ *     tags:
+ *       - Establecimientos
  *     security:
  *       - bearerAuth: []
  *     responses:
@@ -100,6 +101,354 @@ router.get('/establishments', authMiddleware, async (req, res) => {
         res.status(500).json({ ok: false, error: error.message });
     }
 });
+
+
+/**
+ * @openapi
+ * /structure/establishments:
+ *   post:
+ *     summary: Crear un establecimiento
+ *     description: |
+ *       Registra un nuevo establecimiento vinculado al emisor autenticado.
+ *       El código se normaliza automáticamente a 3 dígitos (ej: 1 → "001").
+ *       Si no se proveen `nombre_comercial` o `direccion`, se usan como respaldo
+ *       los datos registrados en el perfil del emisor.
+ *     tags:
+ *       - Establecimientos
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - codigo
+ *             properties:
+ *               codigo:
+ *                 type: integer
+ *                 minimum: 1
+ *                 maximum: 999
+ *                 description: "Número del establecimiento. Se formatea a 3 dígitos internamente."
+ *                 example: 1
+ *               nombre_comercial:
+ *                 type: string
+ *                 nullable: true
+ *                 description: "Si se omite, se usa el nombre_comercial del emisor como respaldo."
+ *                 example: "Sucursal Norte"
+ *               direccion:
+ *                 type: string
+ *                 nullable: true
+ *                 description: "Si se omite, se usa la dirección_matriz del emisor como respaldo."
+ *                 example: "Av. Naciones Unidas E4-17, Quito"
+ *     responses:
+ *       201:
+ *         description: Establecimiento creado correctamente
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                   example: true
+ *                 mensaje:
+ *                   type: string
+ *                   example: "Establecimiento creado correctamente."
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     id:
+ *                       type: integer
+ *                       example: 7
+ *                     emisor_id:
+ *                       type: integer
+ *                       example: 42
+ *                     codigo:
+ *                       type: string
+ *                       description: "Código normalizado a 3 dígitos."
+ *                       example: "001"
+ *                     nombre_comercial:
+ *                       type: string
+ *                       example: "Sucursal Norte"
+ *                     direccion:
+ *                       type: string
+ *                       example: "Av. Naciones Unidas E4-17, Quito"
+ *       400:
+ *         description: Código faltante, inválido o establecimiento duplicado
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                   example: false
+ *                 mensaje:
+ *                   type: string
+ *                   example: "El establecimiento 001 ya existe para tu empresa."
+ *       401:
+ *         description: Token de Firebase inválido o ausente
+ *       404:
+ *         description: Emisor no encontrado
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                   example: false
+ *                 mensaje:
+ *                   type: string
+ *                   example: "Emisor no encontrado."
+ *       500:
+ *         description: Error interno del servidor
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                   example: false
+ *                 error:
+ *                   type: string
+ *                   example: "Error interno del servidor."
+ */
+router.post('/establishments', authMiddleware, async (req, res) => {
+    const { codigo, nombre_comercial, direccion } = req.body;
+    const emisor_id = req.emisor_id;
+
+    // 1. El único campo estrictamente obligatorio ahora es el código
+    if (!codigo) {
+        return res.status(400).json({ ok: false, mensaje: "El código del establecimiento es obligatorio." });
+    }
+
+    // 2. Normalizar código a 3 dígitos
+    const codigoInt = parseInt(codigo);
+    if (isNaN(codigoInt) || codigoInt < 1 || codigoInt > 999) {
+        return res.status(400).json({ ok: false, mensaje: "Código de establecimiento inválido (1-999)." });
+    }
+    const codigoFormateado = codigoInt.toString().padStart(3, '0');
+
+    try {
+        // 3. Obtener datos del emisor por si acaso faltan datos en el body
+        const emisorRes = await pool.query(
+            'SELECT nombre_comercial, direccion_matriz FROM emisores WHERE id = $1',
+            [emisor_id]
+        );
+
+        if (emisorRes.rowCount === 0) {
+            return res.status(404).json({ ok: false, mensaje: "Emisor no encontrado." });
+        }
+
+        const emisorData = emisorRes.rows[0];
+
+        // 4. Lógica de respaldo (Fallback): Si no viene en el body, usa lo del emisor
+        const finalNombre = nombre_comercial || emisorData.nombre_comercial;
+        const finalDireccion = direccion || emisorData.direccion_matriz;
+
+        // 5. Insertar establecimiento
+        const result = await pool.query(
+            `INSERT INTO establecimientos (emisor_id, codigo, nombre_comercial, direccion)
+             VALUES ($1, $2, $3, $4) RETURNING *`,
+            [emisor_id, codigoFormateado, finalNombre, finalDireccion]
+        );
+
+        res.status(201).json({ 
+            ok: true, 
+            mensaje: "Establecimiento creado correctamente.",
+            data: result.rows[0] 
+        });
+
+    } catch (error) {
+        if (error.code === '23505') {
+            return res.status(400).json({ 
+                ok: false, 
+                mensaje: `El establecimiento ${codigoFormateado} ya existe para tu empresa.` 
+            });
+        }
+        console.error(error);
+        res.status(500).json({ ok: false, error: "Error interno del servidor." });
+    }
+});
+
+
+/**
+ * @openapi
+ * /structure/emission-points:
+ *   post:
+ *     summary: Crear un punto de emisión
+ *     description: |
+ *       Registra un nuevo punto de emisión en un establecimiento específico del emisor autenticado.
+ *       Los códigos se reciben ya formateados como strings de 3 dígitos ("001", "002", etc.)
+ *       tal como los requiere el SRI. El secuencial arranca en 1 automáticamente.
+ *     tags:
+ *       - Establecimientos
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - establecimiento_codigo
+ *               - codigo
+ *             properties:
+ *               establecimiento_codigo:
+ *                 type: string
+ *                 pattern: '^\d{3}$'
+ *                 description: "Código del establecimiento en formato SRI (3 dígitos)."
+ *                 example: "001"
+ *               codigo:
+ *                 type: string
+ *                 pattern: '^\d{3}$'
+ *                 description: "Código del punto de emisión en formato SRI (3 dígitos)."
+ *                 example: "001"
+ *               nombre:
+ *                 type: string
+ *                 nullable: true
+ *                 description: "Nombre descriptivo del punto. Si se omite se genera automáticamente."
+ *                 example: "Caja Principal"
+ *     responses:
+ *       201:
+ *         description: Punto de emisión creado correctamente
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                   example: true
+ *                 mensaje:
+ *                   type: string
+ *                   example: "Punto de emisión 001 creado exitosamente para el establecimiento 001."
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     id:
+ *                       type: integer
+ *                       example: 15
+ *                     establecimiento_id:
+ *                       type: integer
+ *                       example: 7
+ *                     codigo:
+ *                       type: string
+ *                       example: "001"
+ *                     secuencial_actual:
+ *                       type: integer
+ *                       description: "Siempre inicia en 1 para puntos nuevos."
+ *                       example: 1
+ *                     nombre:
+ *                       type: string
+ *                       example: "Caja Principal"
+ *       400:
+ *         description: Campos faltantes o punto de emisión duplicado en ese establecimiento
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                   example: false
+ *                 mensaje:
+ *                   type: string
+ *                   example: "El punto de emisión 001 ya existe dentro del establecimiento 001."
+ *       401:
+ *         description: Token de Firebase inválido o ausente
+ *       404:
+ *         description: No existe el establecimiento con ese código para el emisor autenticado
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                   example: false
+ *                 mensaje:
+ *                   type: string
+ *                   example: "No existe el establecimiento 001 registrado en tu cuenta."
+ *       500:
+ *         description: Error interno del servidor
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                   example: false
+ *                 error:
+ *                   type: string
+ *                   example: "Error interno del servidor."
+ */
+router.post('/emission-points', authMiddleware, async (req, res) => {
+    // Recibimos los códigos tal cual los requiere el SRI (ej: "001")
+    const { establecimiento_codigo, codigo, nombre } = req.body;
+    const emisor_id = req.emisor_id;
+
+    if (!establecimiento_codigo || !codigo) {
+        return res.status(400).json({ ok: false, mensaje: "Los códigos de establecimiento y punto son obligatorios." });
+    }
+
+    try {
+        // 1. Buscamos el ID interno del establecimiento del emisor usando el código string ("001")
+        const estabRes = await pool.query(
+            'SELECT id FROM establecimientos WHERE emisor_id = $1 AND codigo = $2',
+            [emisor_id, establecimiento_codigo]
+        );
+
+        if (estabRes.rowCount === 0) {
+            return res.status(404).json({ 
+                ok: false, 
+                mensaje: `No existe el establecimiento ${establecimiento_codigo} registrado en tu cuenta.` 
+            });
+        }
+
+        const db_establecimiento_id = estabRes.rows[0].id;
+
+        // 2. Insertamos el punto de emisión
+        // Forzamos el secuencial inicial a 1
+        const result = await pool.query(
+            `INSERT INTO puntos_emision (establecimiento_id, codigo, secuencial_actual, nombre)
+             VALUES ($1, $2, $3, $4) RETURNING *`,
+            [db_establecimiento_id, codigo, 1, nombre || `Punto ${codigo}`]
+        );
+
+        res.status(201).json({ 
+            ok: true, 
+            mensaje: `Punto de emisión ${codigo} creado exitosamente para el establecimiento ${establecimiento_codigo}.`,
+            data: result.rows[0] 
+        });
+
+    } catch (error) {
+        // Error de duplicado: El par (establecimiento_id, codigo) debe ser único
+        if (error.code === '23505') {
+            return res.status(400).json({ 
+                ok: false, 
+                mensaje: `El punto de emisión ${codigo} ya existe dentro del establecimiento ${establecimiento_codigo}.` 
+            });
+        }
+        console.error(error);
+        res.status(500).json({ ok: false, error: "Error interno del servidor." });
+    }
+});
+
+
+
+
+
+
+
+
+
 
 /**
  * @openapi

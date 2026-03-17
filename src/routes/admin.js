@@ -92,4 +92,125 @@ router.post('/topup', serviceAuth, async (req, res) => {
 });
 
 
+/**
+ * @openapi
+ * /admin/request-pin:
+ *   post:
+ *     summary: Solicitar PIN de verificación
+ *     description: |
+ *       Genera un PIN de 6 dígitos válido por 10 minutos y lo devuelve a n8n
+ *       para que lo entregue al usuario por WhatsApp. Invalida cualquier PIN
+ *       previo del mismo email antes de generar el nuevo.
+ *       Requiere autenticación por API Key.
+ *     tags:
+ *       - Integraciones
+ *     security:
+ *       - apiKeyAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - email
+ *               - whatsapp_number
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 format: email
+ *                 description: "Email del usuario registrado en el sistema."
+ *                 example: "usuario@ejemplo.com"
+ *               whatsapp_number:
+ *                 type: string
+ *                 description: "Número de WhatsApp al que n8n entregará el PIN."
+ *                 example: "593987654321"
+ *               tipo_accion:
+ *                 type: string
+ *                 nullable: true
+ *                 description: "Contexto del PIN. Si se omite, se usa 'VALIDACION_GENERAL'."
+ *                 example: "VALIDACION_GENERAL"
+ *     responses:
+ *       200:
+ *         description: PIN generado correctamente
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                   example: true
+ *                 pin:
+ *                   type: string
+ *                   description: "PIN de 6 dígitos a entregar al usuario. Válido por 10 minutos."
+ *                   example: "482719"
+ *       401:
+ *         description: API Key inválida o ausente
+ *       404:
+ *         description: El email no está registrado en el sistema
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                   example: false
+ *                 mensaje:
+ *                   type: string
+ *                   example: "Email no registrado."
+ *       500:
+ *         description: Error interno del servidor
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                   example: false
+ *                 error:
+ *                   type: string
+ *                   example: "error message"
+ */
+router.post('/request-pin', serviceAuth, async (req, res) => {
+    const { email, whatsapp_number, tipo_accion } = req.body;
+
+    try {
+        // 1. Verificar que el usuario existe
+        const userRes = await pool.query(
+            'SELECT emisor_id FROM profiles WHERE email = $1', 
+            [email]
+        );
+
+        if (userRes.rowCount === 0) {
+            return res.status(404).json({ ok: false, mensaje: "Email no registrado." });
+        }
+
+        const emisor_id = userRes.rows[0].emisor_id;
+
+        // 2. Limpiar pins viejos
+        await pool.query('DELETE FROM auth_challenges WHERE email = $1', [email]);
+
+        // 3. Generar PIN de 6 dígitos
+        const pin = Math.floor(100000 + Math.random() * 900000).toString();
+        const expires_at = new Date(Date.now() + 10 * 60000); // 10 min
+
+        await pool.query(`
+            INSERT INTO auth_challenges (emisor_id, email, whatsapp_number, pin, tipo_accion, expires_at)
+            VALUES ($1, $2, $3, $4, $5, $6)
+        `, [emisor_id, email, whatsapp_number, pin, tipo_accion || 'VALIDACION_GENERAL', expires_at]);
+
+        // 4. Devolver el PIN a n8n para que se lo entregue al usuario por WhatsApp
+        res.json({ ok: true, pin });
+
+    } catch (error) {
+        res.status(500).json({ ok: false, error: error.message });
+    }
+});
+
+
+
+
 module.exports = router;

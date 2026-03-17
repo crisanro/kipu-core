@@ -2,6 +2,12 @@ const { SignedXml } = require('xml-crypto');
 const crypto = require('crypto');
 const forge = require('node-forge');
 
+// ─────────────────────────────────────────────────────────────
+// Activar solo para depuración de certificados P12
+// En .env agregar: DEBUG_SIGNER=true
+// ─────────────────────────────────────────────────────────────
+const DEBUG_SIGNER = process.env.DEBUG_SIGNER === 'true';
+
 /**
  * Selecciona el certificado de firma digital del P12.
  * Prioriza: digitalSignature + nonRepudiation > solo digitalSignature > primer no-CA.
@@ -33,13 +39,18 @@ function _seleccionarCertDeFirma(p12) {
 
     if (!targetBag) throw new Error("[Signer] No se encontró certificado de firma digital en el P12.");
 
-    // Extraer localKeyId del cert para cruzarlo con la llave privada
     const localKeyId = targetBag.attributes?.localKeyId
         ? targetBag.attributes.localKeyId[0]
         : null;
 
     const ku = targetBag.cert.getExtension('keyUsage');
-    console.log(`[Signer] ✅ Cert firma: Serial=${targetBag.cert.serialNumber} | CN=${targetBag.cert.subject.getField('CN')?.value} | ds=${ku?.digitalSignature} | nr=${ku?.nonRepudiation} | localKeyId=${localKeyId ? Buffer.from(localKeyId).toString('hex') : 'N/A'}`);
+
+    // 🔒 Solo visible con DEBUG_SIGNER=true
+    if (DEBUG_SIGNER) {
+        console.log(`[Signer] ✅ Cert firma: Serial=${targetBag.cert.serialNumber} | CN=${targetBag.cert.subject.getField('CN')?.value} | ds=${ku?.digitalSignature} | nr=${ku?.nonRepudiation} | localKeyId=${localKeyId ? Buffer.from(localKeyId).toString('hex') : 'N/A'}`);
+    } else {
+        console.log(`[Signer] ✅ Certificado de firma seleccionado correctamente.`);
+    }
 
     return { cert: targetBag.cert, localKeyId };
 }
@@ -55,13 +66,12 @@ function _seleccionarLlaveDeFirma(p12, localKeyIdCert) {
 
     if (keyBags.length === 0) throw new Error("[Signer] No se encontraron llaves privadas en el P12.");
 
-    // Si solo hay una llave (Security Data, otros), usarla directamente
     if (keyBags.length === 1) {
         console.log(`[Signer] ✅ Llave única encontrada, usándola directamente.`);
         return keyBags[0].key;
     }
 
-    // Estrategia 1: cruzar por localKeyId (BCE tiene localKeyId en certs y llaves)
+    // Estrategia 1: cruzar por localKeyId
     if (localKeyIdCert) {
         const certKeyIdHex = Buffer.from(localKeyIdCert).toString('hex');
 
@@ -69,7 +79,12 @@ function _seleccionarLlaveDeFirma(p12, localKeyIdCert) {
             const keyId = bag.attributes?.localKeyId?.[0];
             if (!keyId) return false;
             const keyIdHex = Buffer.from(keyId).toString('hex');
-            console.log(`[Signer] Comparando localKeyId: cert=${certKeyIdHex} vs key=${keyIdHex}`);
+
+            // 🔒 Solo visible con DEBUG_SIGNER=true
+            if (DEBUG_SIGNER) {
+                console.log(`[Signer] Comparando localKeyId: cert=${certKeyIdHex} vs key=${keyIdHex}`);
+            }
+
             return keyIdHex === certKeyIdHex;
         });
 
@@ -79,7 +94,7 @@ function _seleccionarLlaveDeFirma(p12, localKeyIdCert) {
         }
     }
 
-    // Estrategia 2: buscar "Signing Key" en el friendlyName (BCE SODIgnature)
+    // Estrategia 2: buscar "Signing Key" en el friendlyName
     const matchByName = keyBags.find(bag => {
         const name = bag.attributes?.friendlyName?.[0] || '';
         return name.toLowerCase().includes('signing key');
@@ -90,8 +105,7 @@ function _seleccionarLlaveDeFirma(p12, localKeyIdCert) {
         return matchByName.key;
     }
 
-    // Estrategia 3 (fallback): última llave de la lista
-    // (en BCE, el orden es: Decryption Key primero, Signing Key último)
+    // Estrategia 3 (fallback): última llave
     console.warn(`[Signer] ⚠️ No se pudo cruzar por ID ni nombre, usando última llave como fallback.`);
     return keyBags[keyBags.length - 1].key;
 }
@@ -102,7 +116,6 @@ function _seleccionarLlaveDeFirma(p12, localKeyIdCert) {
  * Compatible con P12s del BCE (2 llaves) y Security Data (1 llave).
  */
 function signInvoiceXmlCustom(xml, certBag, keyBag, p12) {
-    // Seleccionar cert y llave correctos internamente (no depender de lo que pase sriService)
     const { cert: certificate, localKeyId } = _seleccionarCertDeFirma(p12);
     const privateKey = _seleccionarLlaveDeFirma(p12, localKeyId);
 
@@ -110,7 +123,7 @@ function signInvoiceXmlCustom(xml, certBag, keyBag, p12) {
 
     const keyPem = forge.pki.privateKeyToPem(privateKey);
 
-    // --- CADENA DE CERTIFICADOS: primero el de firma, luego los demás ---
+    // --- CADENA DE CERTIFICADOS ---
     let allCertsPem = [];
     try {
         const mainPem = forge.pki.certificateToPem(certificate)
@@ -141,7 +154,6 @@ function signInvoiceXmlCustom(xml, certBag, keyBag, p12) {
     sig.signatureAlgorithm = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256";
     sig.canonicalizationAlgorithm = "http://www.w3.org/TR/2001/REC-xml-c14n-20010315";
 
-    // Referencia al comprobante
     sig.addReference({
         xpath: "//*[@id='comprobante']",
         transforms: [
@@ -151,22 +163,23 @@ function signInvoiceXmlCustom(xml, certBag, keyBag, p12) {
         digestAlgorithm: "http://www.w3.org/2001/04/xmlenc#sha256"
     });
 
-    // --- XADES: hash y serial del cert de FIRMA ---
+    // --- XADES ---
     const certDer = forge.asn1.toDer(forge.pki.certificateToAsn1(certificate)).getBytes();
     const certHash = crypto.createHash('sha256').update(certDer, 'binary').digest('base64');
 
-    // IssuerName en orden original del cert (sin reverse)
     const issuerName = certificate.issuer.attributes
         .map(attr => `${attr.shortName}=${attr.value}`)
         .join(', ');
 
     const serialNumberDec = BigInt('0x' + certificate.serialNumber).toString();
 
-    console.log(`[Signer] XAdES → Serial=${serialNumberDec} | Hash=${certHash}`);
+    // 🔒 Solo visible con DEBUG_SIGNER=true
+    if (DEBUG_SIGNER) {
+        console.log(`[Signer] XAdES → Serial=${serialNumberDec} | Hash=${certHash}`);
+    }
 
     const signedPropsId = 'SignedProperties-' + crypto.randomBytes(10).toString('hex');
 
-    // Referencia a SignedProperties
     sig.addReference({
         xpath: `//*[@Id='${signedPropsId}']`,
         transforms: ["http://www.w3.org/TR/2001/REC-xml-c14n-20010315"],
@@ -178,7 +191,6 @@ function signInvoiceXmlCustom(xml, certBag, keyBag, p12) {
 
     const rootXml = `<root>${xml}<Signature xmlns="http://www.w3.org/2000/09/xmldsig#"><Object>${signedPropertiesXml}</Object></Signature></root>`;
 
-    // Inyectar Type en la referencia de SignedProperties
     const originalCreateReferences = sig.createReferences.bind(sig);
     sig.createReferences = function (params) {
         let references = originalCreateReferences(params);
@@ -191,11 +203,9 @@ function signInvoiceXmlCustom(xml, certBag, keyBag, p12) {
     sig.computeSignature(rootXml);
     let signedRootXml = sig.getSignedXml();
 
-    // Extraer bloque Signature
     const signatureBlockMatch = signedRootXml.match(/<(\w+:)?Signature[\s\S]*?<\/\1Signature>/g);
     let signatureBlock = signatureBlockMatch[signatureBlockMatch.length - 1];
 
-    // Construir KeyInfo con la clave pública del cert de FIRMA
     const prefix = (signatureBlock.match(/<(\w+:)?Signature /) || [])[1] || '';
     const modulus = Buffer.from(privateKey.n.toString(16), 'hex').toString('base64');
     const exponent = Buffer.from(privateKey.e.toString(16), 'hex').toString('base64');

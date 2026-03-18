@@ -15,7 +15,7 @@ const mainRouter = express.Router();
 // --- CONFIGURACIÓN DE CRON JOBS ---
 
 // Job 1: Enviar facturas FIRMADAS al SRI (Cada 20 segundos)
-cron.schedule('*/20 * * * * *', async () => {
+cron.schedule('*/10 * * * * *', async () => {
     try {
         await enviarFacturasAlSRI();
     } catch (err) {
@@ -24,7 +24,7 @@ cron.schedule('*/20 * * * * *', async () => {
 });
 
 // Job 2: Autorizar facturas RECIBIDAS (Cada minuto)
-cron.schedule('* * * * *', async () => {
+cron.schedule('*/30 * * * * *', async () => {
     try {
         await autorizarFacturasSRI();
     } catch (err) {

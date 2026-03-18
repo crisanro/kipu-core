@@ -446,7 +446,6 @@ router.post('/upload-p12', authMiddleware, upload.single('file'), async (req, re
 router.get('/config', authMiddleware, async (req, res) => {
     const emisor_id = req.emisor_id;
 
-    // Si el middleware no inyectó emisor_id, es un usuario que no ha hecho onboarding
     if (!emisor_id) {
         return res.json({ 
             ok: true, 
@@ -477,17 +476,35 @@ router.get('/config', authMiddleware, async (req, res) => {
         const hoy = new Date();
         const expiracion = data.p12_expiration ? new Date(data.p12_expiration) : null;
         
+        // Extraer nombre del archivo de la ruta (ej: "bucket/ruc/firma.p12" -> "firma.p12")
+        const nombreFirma = data.p12_path ? data.p12_path.split('/').pop() : 'No configurada';
+
         let firma_info = {
             configurada: !!data.p12_path,
+            nombre: nombreFirma,
             expiracion: data.p12_expiration,
-            dias_restantes: null,
-            estado: 'PENDIENTE' // PENDIENTE, VIGENTE, EXPIRADA
+            estado: 'PENDIENTE', 
+            mensaje_vencimiento: 'Firma no cargada'
         };
 
         if (expiracion) {
             const diffTime = expiracion - hoy;
-            firma_info.dias_restantes = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-            firma_info.estado = firma_info.dias_restantes > 0 ? 'VIGENTE' : 'EXPIRADA';
+            const diasRestantes = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+            
+            // Formatear fecha para el mensaje (ej: 31 de dic de 2026)
+            const opcionesFecha = { day: 'numeric', month: 'short', year: 'numeric' };
+            const fechaFormateada = expiracion.toLocaleDateString('es-EC', opcionesFecha);
+
+            if (diasRestantes <= 0) {
+                firma_info.estado = 'EXPIRADA';
+                firma_info.mensaje_vencimiento = `Expirada el ${fechaFormateada}`;
+            } else if (diasRestantes <= 60) {
+                firma_info.estado = 'ALERTA'; // Cambiamos a alerta si faltan 60 días o menos
+                firma_info.mensaje_vencimiento = `Expira en ${diasRestantes} días`;
+            } else {
+                firma_info.estado = 'VIGENTE';
+                firma_info.mensaje_vencimiento = `Vigente hasta el ${fechaFormateada}`;
+            }
         }
 
         // --- Respuesta Final ---

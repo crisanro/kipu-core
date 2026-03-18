@@ -175,34 +175,34 @@ router.get('/', authMiddleware, async (req, res) => {
     try {
         const { fecha_inicio, fecha_fin } = req.query;
         const emisor_id = req.emisor_id;
+        const email_usuario = req.user.email; 
 
         if (!fecha_inicio || !fecha_fin) {
             return res.status(400).json({ ok: false, error: 'fecha_inicio y fecha_fin son requeridas' });
         }
 
-        // Helper con reintento automático para queries que pueden fallar por ECONNRESET
-        const queryConReintento = async (text, params, fallback) => {
+        const queryConReintento = async (text, params) => {
             try {
                 return await pool.query(text, params);
             } catch (err) {
                 if (err.code === 'ECONNRESET' || err.code === 'ECONNREFUSED') {
-                    console.warn('⚠️ Reintentando query tras ECONNRESET...');
-                    await new Promise(r => setTimeout(r, 200)); // espera 200ms
-                    return await pool.query(text, params);      // un solo reintento
+                    await new Promise(r => setTimeout(r, 200));
+                    return await pool.query(text, params);
                 }
-                if (fallback !== undefined) return fallback;
                 throw err;
             }
         };
 
         const [emisorResult, healthCheckResult, resumenResult, facturasResult, apiKeysResult] = await Promise.all([
-            // 1. Datos básicos del emisor y créditos
-            emisor_id ? queryConReintento(
-                `SELECT e.ruc, e.ambiente, e.p12_path, e.p12_expiration, c.balance 
-                 FROM emisores e LEFT JOIN user_credits c ON c.emisor_id = e.id WHERE e.id = $1`,
-                [emisor_id]
-            ) : { rows: [] },
-
+            // 1. Perfil y Emisor
+            queryConReintento(
+                `SELECT e.ruc, e.p12_path, e.p12_expiration, c.balance, p.whatsapp_number 
+                 FROM profiles p
+                 LEFT JOIN emisores e ON p.emisor_id = e.id 
+                 LEFT JOIN user_credits c ON c.emisor_id = e.id 
+                 WHERE p.email = $1`,
+                [email_usuario.toLowerCase()]
+            ),
             // 2. Infraestructura
             emisor_id ? queryConReintento(
                 `SELECT 
@@ -211,8 +211,7 @@ router.get('/', authMiddleware, async (req, res) => {
                      JOIN establecimientos e ON p.establecimiento_id = e.id WHERE e.emisor_id = $1) as total_puntos`,
                 [emisor_id]
             ) : { rows: [{ total_estab: 0, total_puntos: 0 }] },
-
-            // 3. Resumen financiero
+            // 3. Resumen financiero (Totales)
             emisor_id ? queryConReintento(
                 `SELECT COUNT(id) as total_facturas, COALESCE(SUM(subtotal_iva), 0) as subtotal_iva,
                  COALESCE(SUM(subtotal_0), 0) as subtotal_0, COALESCE(SUM(valor_iva), 0) as valor_iva,
@@ -220,29 +219,43 @@ router.get('/', authMiddleware, async (req, res) => {
                  FROM invoices WHERE emisor_id = $1 AND fecha_emision BETWEEN $2 AND $3`,
                 [emisor_id, fecha_inicio, fecha_fin]
             ) : { rows: [{ total_facturas: 0, subtotal_iva: 0, subtotal_0: 0, valor_iva: 0, importe_total: 0 }] },
-
-            // 4. Listado de facturas
+            // 4. Listado de facturas con Formato Legal SRI
             emisor_id ? queryConReintento(
-                `SELECT id, secuencial, estado, razon_social_comprador, importe_total, fecha_emision
-                 FROM invoices WHERE emisor_id = $1 AND fecha_emision BETWEEN $2 AND $3
-                 ORDER BY created_at DESC LIMIT 50`,
+                `SELECT 
+                    f.clave_acceso, 
+                    e.codigo as estab, 
+                    p.codigo as punto, 
+                    f.secuencial, 
+                    f.estado, 
+                    f.identificacion_comprador, 
+                    f.razon_social_comprador, 
+                    f.subtotal_iva,
+                    f.subtotal_0,
+                    f.valor_iva,
+                    f.importe_total, 
+                    f.fecha_emision
+                 FROM invoices f
+                 JOIN puntos_emision p ON f.punto_emision_id = p.id
+                 JOIN establecimientos e ON p.establecimiento_id = e.id
+                 WHERE f.emisor_id = $1 AND f.fecha_emision BETWEEN $2 AND $3
+                 ORDER BY f.created_at DESC LIMIT 50`,
                 [emisor_id, fecha_inicio, fecha_fin]
             ) : { rows: [] },
-
-            // 5. API Keys
+            // 5. API Keys activas
             emisor_id ? queryConReintento(
                 `SELECT COUNT(*) as total_keys FROM api_keys WHERE emisor_id = $1 AND revoked = false`,
                 [emisor_id]
             ) : { rows: [{ total_keys: 0 }] }
         ]);
 
-        const emisor = emisorResult.rows[0] || {};
+        const dataBasic = emisorResult.rows[0] || {};
         const healthStats = healthCheckResult.rows[0];
         const resumen = resumenResult.rows[0];
         const totalKeys = parseInt(apiKeysResult.rows[0].total_keys);
 
+        // Lógica de Firma Electrónica
         const hoy = new Date();
-        const expiracion = emisor.p12_expiration ? new Date(emisor.p12_expiration) : null;
+        const expiracion = dataBasic.p12_expiration ? new Date(dataBasic.p12_expiration) : null;
         let firma_vigente = false;
         let firma_alerta = emisor_id ? null : "Configuración inicial pendiente";
 
@@ -253,20 +266,36 @@ router.get('/', authMiddleware, async (req, res) => {
             else if (diasRestantes <= 30) firma_alerta = `Firma próxima a caducar (${diasRestantes} días)`;
         }
 
+        // Mapeo limpio de facturas para el Frontend
+        const facturasMap = facturasResult.rows.map(f => ({
+            clave_acceso: f.clave_acceso,
+            numero: `${f.estab}-${f.punto}-${f.secuencial}`,
+            cliente_nombre: f.razon_social_comprador,
+            cliente_id: f.identificacion_comprador,
+            subtotal_15: parseFloat(f.subtotal_iva),
+            subtotal_0: parseFloat(f.subtotal_0),
+            iva: parseFloat(f.valor_iva),
+            total: parseFloat(f.importe_total),
+            estado: f.estado,
+            fecha: new Date(f.fecha_emision).toISOString().split('T')[0]
+        }));
+
         res.json({
             ok: true,
             data: {
                 health: {
-                    ruc: !!emisor.ruc,
-                    ambiente_produccion: emisor.ambiente === 2,
-                    firma_configurada: !!emisor.p12_path,
+                    ruc: !!dataBasic.ruc,
+                    ambiente_produccion: dataBasic.ambiente === 2,
+                    firma_configurada: !!dataBasic.p12_path,
                     firma_vigente,
                     firma_alerta,
                     establecimientos_configurados: parseInt(healthStats.total_estab) > 0,
                     puntos_emision_configurados: parseInt(healthStats.total_puntos) > 0,
-                    creditos_disponibles: emisor.balance || 0,
+                    creditos_disponibles: dataBasic.balance || 0,
                     usuario_nuevo: !emisor_id,
-                    tiene_api_key: totalKeys > 0
+                    tiene_api_key: totalKeys > 0,
+                    whatsapp_vinculado: !!dataBasic.whatsapp_number,
+                    whatsapp_numero: dataBasic.whatsapp_number || null
                 },
                 resumen: {
                     total_facturas: parseInt(resumen.total_facturas),
@@ -275,7 +304,7 @@ router.get('/', authMiddleware, async (req, res) => {
                     valor_iva: parseFloat(resumen.valor_iva),
                     importe_total: parseFloat(resumen.importe_total)
                 },
-                facturas: facturasResult.rows
+                facturas: facturasMap
             }
         });
 
@@ -284,6 +313,5 @@ router.get('/', authMiddleware, async (req, res) => {
         res.status(500).json({ ok: false, error: 'Error al cargar el dashboard' });
     }
 });
-
 
 module.exports = router;

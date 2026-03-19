@@ -4,6 +4,8 @@ const router = express.Router();
 const pool = require('../database/index');
 const { minioClient } = require('../services/storageService');
 const publicAuth = require('../middlewares/publicAuth');
+const { URLSearchParams } = require('url'); // Viene con Node.js
+
 require('dotenv').config();
 // ── Descarga PDF ──────────────────────────────────────────────────────────────
 /**
@@ -239,11 +241,11 @@ router.get('/xml/:claveAcceso', publicAuth, async (req, res) => {
  */
 router.post('/consultar/:claveAcceso', publicAuth, async (req, res) => {
   const { claveAcceso } = req.params;
-  const { captchaToken, hpValue } = req.body; // Recibimos el token y el honeypot
+  const { captchaToken, hpValue } = req.body; 
 
-  // --- CAPA 4: HONEYPOT (Backend Check) ---
+  // --- CAPA 4: HONEYPOT (Trampa para bots) ---
   if (hpValue) {
-    // Si el campo trampa tiene algo, ignoramos silenciosamente o damos error
+    console.warn(`[SECURITY] Honeypot activado por IP: ${req.ip}`);
     return res.status(400).json({ error: 'Bot detectado' });
   }
 
@@ -256,21 +258,30 @@ router.post('/consultar/:claveAcceso', publicAuth, async (req, res) => {
   try {
     const secretKey = process.env.TURNSTILE_SECRET_KEY;
     
+    // IMPORTANTE: Cloudflare requiere x-www-form-urlencoded, no JSON
+    const params = new URLSearchParams();
+    params.append('secret', secretKey);
+    params.append('response', captchaToken);
+    params.append('remoteip', req.ip);
+
     const verifyURL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
-    const response = await axios.post(verifyURL, {
-      secret: secretKey,
-      response: captchaToken,
-      remoteip: req.ip // Opcional pero recomendado
+    
+    const response = await axios.post(verifyURL, params, {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
+      }
     });
 
+    // Si Cloudflare responde success: false
     if (!response.data.success) {
+      console.error('[SECURITY] Turnstile Fallido:', response.data['error-codes']);
       return res.status(403).json({ 
         success: false, 
-        mensaje_usuario: 'La verificación de seguridad ha fallado. Por favor, recarga la página.' 
+        mensaje_usuario: 'La verificación de seguridad ha fallado. Por favor, intenta de nuevo.' 
       });
     }
 
-    // --- LOGICA ORIGINAL DE BASE DE DATOS ---
+    // --- LOGICA DE BASE DE DATOS ---
     const query = `
       SELECT 
         i.clave_acceso, i.secuencial, i.fecha_emision, i.estado, i.mensajes_sri,
@@ -293,7 +304,7 @@ router.post('/consultar/:claveAcceso', publicAuth, async (req, res) => {
 
     const factura = result.rows[0];
 
-    // Tu switch original (se mantiene igual...)
+    // --- RESPUESTA SEGÚN ESTADO ---
     switch (factura.estado) {
       case 'AUTORIZADO':
         return res.json({
@@ -313,17 +324,41 @@ router.post('/consultar/:claveAcceso', publicAuth, async (req, res) => {
             }
           }
         });
-      // ... resto de los casos (RECIBIDO, DEVUELTA, etc.) ...
+
+      case 'RECIBIDO':
+      case 'EN PROCESO':
+        return res.status(200).json({
+          success: false,
+          estado: factura.estado,
+          mensaje_usuario: 'Tu factura ha sido recibida por el SRI y está en proceso de autorización. Por favor, intenta en unos minutos.'
+        });
+
+      case 'DEVUELTA':
+      case 'RECHAZADO':
+        return res.status(200).json({
+          success: false,
+          estado: factura.estado,
+          mensaje_usuario: 'La factura presenta inconsistencias y fue devuelta/rechazada por el SRI.',
+          detalles_sri: factura.mensajes_sri,
+          sugerencia: `Por favor, contacta al emisor (${factura.emisor_nombre}) para solucionar este inconveniente.`
+        });
+
       default:
         return res.status(200).json({
            success: false,
            estado: factura.estado,
-           mensaje_usuario: 'El comprobante se encuentra en estado: ' + factura.estado
+           mensaje_usuario: 'El comprobante se encuentra en estado: ' + factura.estado,
+           sugerencia: 'Si el problema persiste, contacta al comercio emisor.'
         });
     }
 
   } catch (error) {
-    console.error('Error en validación o consulta:', error);
+    // Si el error viene de la respuesta de Axios
+    if (error.response) {
+      console.error('Error de Cloudflare:', error.response.data);
+    } else {
+      console.error('Error en validación o consulta:', error.message);
+    }
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 });

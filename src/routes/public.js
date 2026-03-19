@@ -87,7 +87,7 @@ router.get('/xml/:claveAcceso', publicAuth, async (req, res) => {
 /**
  * @openapi
  * /public/consultar/{claveAcceso}:
- *   get:
+ *   post:
  *     summary: Consultar estado de un comprobante
  *     tags: [Público]
  *     parameters:

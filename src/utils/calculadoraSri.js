@@ -8,7 +8,9 @@ const forge = require('node-forge');
 const { DateTime } = require('luxon');
 const { XMLParser } = require('fast-xml-parser'); 
 const parser = new XMLParser({ ignoreAttributes: false }); 
-
+const axios = require('axios');
+const { notificarCambioEstado } = require('../workers/notifierService'); 
+const emailService = require('../services/mailService');
 
 // Mapeo de códigos SRI actualizado al 2026
 const CODIGOS_IVA = {
@@ -326,15 +328,115 @@ const emitirFacturaCore = async (req, res) => {
 
         const facturaId = insertResult.rows[0].id;
         await client2.query('COMMIT');
+        try {
+            const URLS_SRI_LOCAL = {
+                1: { rec: 'https://celcer.sri.gob.ec/comprobantes-electronicos-ws/RecepcionComprobantesOffline?wsdl', auth: 'https://celcer.sri.gob.ec/comprobantes-electronicos-ws/AutorizacionComprobantesOffline?wsdl' },
+                2: { rec: 'https://cel.sri.gob.ec/comprobantes-electronicos-ws/RecepcionComprobantesOffline?wsdl', auth: 'https://cel.sri.gob.ec/comprobantes-electronicos-ws/AutorizacionComprobantesOffline?wsdl' }
+            };
+
+            const urls = URLS_SRI_LOCAL[emisor.ambiente];
+            const xmlBase64 = Buffer.from(xmlFirmado).toString('base64');
+            const { XMLParser } = require('fast-xml-parser');
+            const fastParser = new XMLParser({ ignoreAttributes: false, trimValues: true });
+
+            // Preparamos el objeto "factura" para los servicios de notificación
+            // Debe ser igual al SELECT que hacen los Cronjobs
+            const facturaParaNotificar = {
+                id: facturaId,
+                clave_acceso: claveAcceso,
+                email_comprador: facturaData.cliente.email,
+                razon_social_comprador: facturaData.cliente.nombre || facturaData.cliente.razonSocial,
+                secuencial: secuencial,
+                importe_total: calculos.totales.importeTotal,
+                pdf_path: `invoices/${emisor.ruc}/${claveAcceso}.pdf`,
+                ambiente: emisor.ambiente,
+                ruc: emisor.ruc,
+                emisor_db_id: emisorId,
+                razon_social: emisor.razon_social
+            };
+
+            // 1. RECEPCIÓN
+            const soapRec = `<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ec="http://ec.gob.sri.ws.recepcion"><soapenv:Body><ec:validarComprobante><xml>${xmlBase64}</xml></ec:validarComprobante></soapenv:Body></soapenv:Envelope>`;
+            const resRec = await axios.post(urls.rec, soapRec, { headers: { 'Content-Type': 'text/xml' }, timeout: 8000 });
+            const jsonRec = fastParser.parse(resRec.data);
+            const respRec = jsonRec['soap:Envelope']?.['soap:Body']?.['ns2:validarComprobanteResponse']?.RespuestaRecepcionComprobante;
+
+            if (respRec && respRec.estado === 'RECIBIDA') {
+                await pool.query('UPDATE invoices SET estado = $1, fecha_envio_sri = NOW() WHERE id = $2', ['RECIBIDA', facturaId]);
+                await notificarCambioEstado(facturaParaNotificar, 'RECIBIDA');
+
+                // 2. BUCLE DE AUTORIZACIÓN
+                const soapAuth = `<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ec="http://ec.gob.sri.ws.autorizacion"><soapenv:Body><ec:autorizacionComprobante><claveAccesoComprobante>${claveAcceso}</claveAccesoComprobante></ec:autorizacionComprobante></soapenv:Body></soapenv:Envelope>`;
+                const pausas = [1200, 1800, 2500];
+
+                for (let ms of pausas) {
+                    await new Promise(r => setTimeout(r, ms));
+                    try {
+                        const resAuth = await axios.post(urls.auth, soapAuth, { headers: { 'Content-Type': 'text/xml' }, timeout: 5000 });
+                        const jsonAuth = fastParser.parse(resAuth.data);
+                        const respAuth = jsonAuth['soap:Envelope']?.['soap:Body']?.['ns2:autorizacionComprobanteResponse']?.RespuestaAutorizacionComprobante;
+
+                        if (respAuth && parseInt(respAuth.numeroComprobantes) > 0) {
+                            const auth = Array.isArray(respAuth.autorizaciones.autorizacion) ? respAuth.autorizaciones.autorizacion[0] : respAuth.autorizaciones.autorizacion;
+                            
+                            if (auth.estado === 'AUTORIZADO') {
+                                const xmlAuthPath = `authorized/${emisor.ruc}/${claveAcceso}.xml`;
+                                await uploadFile('invoices', xmlAuthPath, Buffer.from(auth.comprobante), 'text/xml');
+
+                                // Actualizar PDF a 'AUTORIZADO' (Igual que Job 2)
+                                const pdfAutorizado = await generarPDFStream(auth.comprobante, emisor, 'AUTORIZADO', auth.fechaAutorizacion);
+                                await minioClient.putObject('invoices', `${emisor.ruc}/${claveAcceso}.pdf`, pdfAutorizado, null, { 'Content-Type': 'application/pdf' });
+
+                                await pool.query(
+                                    'UPDATE invoices SET estado = $1, xml_path = $2, fecha_autorizacion = $3 WHERE id = $4',
+                                    ['AUTORIZADO', `invoices/${xmlAuthPath}`, auth.fechaAutorizacion, facturaId]
+                                );
+
+                                // Notificaciones Instantáneas
+                                await notificarCambioEstado(facturaParaNotificar, 'AUTORIZADO');
+                                
+                                if (facturaParaNotificar.email_comprador) {
+                                    const pdfBuffer = await downloadFile('invoices', `${emisor.ruc}/${claveAcceso}.pdf`);
+                                    await emailService.enviarComprobante(facturaParaNotificar.email_comprador, Buffer.from(auth.comprobante), pdfBuffer, {
+                                        razonSocialEmisor: emisor.razon_social,
+                                        nombreCliente: facturaParaNotificar.razon_social_comprador,
+                                        secuencial: secuencial,
+                                        claveAcceso: claveAcceso,
+                                        total: facturaParaNotificar.importe_total
+                                    });
+                                }
+                                console.log(`[FAST-TRACK] ⭐ ÉXITO: ${claveAcceso}`);
+                                break; 
+                            } else if (auth.estado === 'RECHAZADO' || auth.estado === 'NO AUTORIZADO') {
+                                const msg = JSON.stringify(auth.mensajes);
+                                await pool.query('UPDATE invoices SET estado = $1, mensajes_sri = $2 WHERE id = $3', ['RECHAZADO', msg, facturaId]);
+                                await pool.query('UPDATE user_credits SET balance = balance + 1 WHERE emisor_id = $1', [emisorId]);
+                                await notificarCambioEstado(facturaParaNotificar, 'RECHAZADO', auth.mensajes);
+                                break;
+                            }
+                        }
+                    } catch (eAuth) { continue; }
+                }
+            } else if (respRec && respRec.estado === 'DEVUELTA') {
+                const errorMsg = JSON.stringify(respRec.comprobantes || respRec);
+                await pool.query('UPDATE invoices SET estado = $1, mensajes_sri = $2 WHERE id = $3', ['DEVUELTA', errorMsg, facturaId]);
+                await pool.query('UPDATE user_credits SET balance = balance + 1 WHERE emisor_id = $1', [emisorId]);
+                await notificarCambioEstado(facturaParaNotificar, 'DEVUELTA', respRec);
+            }
+        } catch (e) {
+            console.log(`[FAST-TRACK] ℹ️ SRI en modo asíncrono para clave ${claveAcceso}`);
+        }
+
+        // Consulta final para responder al cliente con el estado real tras el intento
+        const finalCheck = await pool.query('SELECT estado FROM invoices WHERE id = $1', [facturaId]);
+        const estadoFinal = finalCheck.rows[0].estado;
 
         res.status(201).json({
             ok: true,
             id: facturaId,
             claveAcceso,
-            creditos_restantes: emisor.balance - 1,
-            xml: `invoices/${xmlPathRelative}`,
-            pdf: `invoices/${pdfPathRelative}`,
-            mensaje: "Factura generada y firmada exitosamente."
+            estado: estadoFinal,
+            mensaje: estadoFinal === 'AUTORIZADO' ? "Factura autorizada exitosamente." : "Comprobante en proceso."
         });
 
     } catch (error) {

@@ -102,8 +102,6 @@ router.get('/xml/:claveAcceso', publicAuth, async (req, res) => {
  *       404:
  *         description: Factura no encontrada
  */
-const axios = require('axios'); // Necesario para hablar con Cloudflare
-require('dotenv').config();
 
 // Cambiamos a POST para recibir el token de seguridad en el cuerpo (body)
 router.post('/consultar/:claveAcceso', publicAuth, async (req, res) => {

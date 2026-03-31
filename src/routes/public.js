@@ -240,48 +240,47 @@ router.get('/xml/:claveAcceso', publicAuth, async (req, res) => {
  *                   example: "Error interno del servidor"
  */
 router.post('/consultar/:claveAcceso', publicAuth, async (req, res) => {
-  const { claveAcceso } = req.params;
-  const { captchaToken, hpValue } = req.body; 
+  // --- ERROR SOLUCIONADO: Añadimos el try principal ---
+  try { 
+    const { claveAcceso } = req.params;
+    const { captchaToken, hpValue } = req.body; 
 
-  // --- VALIDACIÓN DE BYPASS PARA N8N ---
-  // Comparamos el header que envía n8n con tu clave del .env
-  const isN8nRequest = req.headers['x-n8n-api-key'] === process.env.N8N_API_KEY;
+    // --- VALIDACIÓN DE BYPASS PARA N8N ---
+    const isN8nRequest = req.headers['x-n8n-api-key'] === process.env.N8N_API_KEY;
 
-  // --- CAPA 4: HONEYPOT (Solo si NO es n8n) ---
-  if (!isN8nRequest && hpValue) {
-    console.warn(`[SECURITY] Honeypot activado por IP: ${req.ip}`);
-    return res.status(400).json({ error: 'Bot detectado' });
-  }
-
-  // --- CAPA 5: VALIDACIÓN DE FORMATO ---
-  if (!/^\d{49}$/.test(claveAcceso)) {
-    return res.status(400).json({ error: 'Clave de acceso inválida' });
-  }
-
-  // --- CAPA 2: VALIDACIÓN TURNSTILE (Omitir si es n8n) ---
-  if (!isN8nRequest) {
-    try {
-      const secretKey = process.env.TURNSTILE_SECRET_KEY;
-      const params = new URLSearchParams();
-      params.append('secret', secretKey);
-      params.append('response', captchaToken);
-      params.append('remoteip', req.ip);
-
-      const verifyURL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
-      const response = await axios.post(verifyURL, params, {
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-      });
-
-      if (!response.data.success) {
-        return res.status(403).json({ 
-          success: false, 
-          mensaje_usuario: 'La verificación de seguridad ha fallado.' 
-        });
-      }
-    } catch (error) {
-      return res.status(500).json({ error: 'Error en validación de seguridad' });
+    // --- CAPA 4: HONEYPOT (Solo si NO es n8n) ---
+    if (!isN8nRequest && hpValue) {
+      console.warn(`[SECURITY] Honeypot activado por IP: ${req.ip}`);
+      return res.status(400).json({ error: 'Bot detectado' });
     }
-  }
+
+    // --- CAPA 5: VALIDACIÓN DE FORMATO ---
+    if (!/^\d{49}$/.test(claveAcceso)) {
+      return res.status(400).json({ error: 'Clave de acceso inválida' });
+    }
+
+    // --- CAPA 2: VALIDACIÓN TURNSTILE (Omitir si es n8n) ---
+    if (!isN8nRequest) {
+        const secretKey = process.env.TURNSTILE_SECRET_KEY;
+        const params = new URLSearchParams();
+        params.append('secret', secretKey);
+        params.append('response', captchaToken);
+        params.append('remoteip', req.ip);
+
+        const verifyURL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
+        
+        // Usamos axios sin un try-catch interno para que el catch general capture fallos de red
+        const response = await axios.post(verifyURL, params, {
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+        });
+
+        if (!response.data.success) {
+          return res.status(403).json({ 
+            success: false, 
+            mensaje_usuario: 'La verificación de seguridad ha fallado.' 
+          });
+        }
+    }
 
     // --- LOGICA DE BASE DE DATOS ---
     const query = `
@@ -332,7 +331,7 @@ router.post('/consultar/:claveAcceso', publicAuth, async (req, res) => {
         return res.status(200).json({
           success: false,
           estado: factura.estado,
-          mensaje_usuario: 'Tu factura ha sido recibida por el SRI y está en proceso de autorización. Por favor, intenta en unos minutos.'
+          mensaje_usuario: 'Tu factura ha sido recibida por el SRI y está en proceso de autorización.'
         });
 
       case 'DEVUELTA':
@@ -354,8 +353,7 @@ router.post('/consultar/:claveAcceso', publicAuth, async (req, res) => {
         });
     }
 
-  } catch (error) {
-    // Si el error viene de la respuesta de Axios
+  } catch (error) { // Este es el catch que fallaba (línea 357)
     if (error.response) {
       console.error('Error de Cloudflare:', error.response.data);
     } else {

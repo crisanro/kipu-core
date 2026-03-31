@@ -243,8 +243,12 @@ router.post('/consultar/:claveAcceso', publicAuth, async (req, res) => {
   const { claveAcceso } = req.params;
   const { captchaToken, hpValue } = req.body; 
 
-  // --- CAPA 4: HONEYPOT (Trampa para bots) ---
-  if (hpValue) {
+  // --- VALIDACIÓN DE BYPASS PARA N8N ---
+  // Comparamos el header que envía n8n con tu clave del .env
+  const isN8nRequest = req.headers['x-n8n-api-key'] === process.env.N8N_API_KEY;
+
+  // --- CAPA 4: HONEYPOT (Solo si NO es n8n) ---
+  if (!isN8nRequest && hpValue) {
     console.warn(`[SECURITY] Honeypot activado por IP: ${req.ip}`);
     return res.status(400).json({ error: 'Bot detectado' });
   }
@@ -254,32 +258,30 @@ router.post('/consultar/:claveAcceso', publicAuth, async (req, res) => {
     return res.status(400).json({ error: 'Clave de acceso inválida' });
   }
 
-  // --- CAPA 2: VALIDACIÓN TURNSTILE (USO DE SECRET_KEY) ---
-  try {
-    const secretKey = process.env.TURNSTILE_SECRET_KEY;
-    
-    // IMPORTANTE: Cloudflare requiere x-www-form-urlencoded, no JSON
-    const params = new URLSearchParams();
-    params.append('secret', secretKey);
-    params.append('response', captchaToken);
-    params.append('remoteip', req.ip);
+  // --- CAPA 2: VALIDACIÓN TURNSTILE (Omitir si es n8n) ---
+  if (!isN8nRequest) {
+    try {
+      const secretKey = process.env.TURNSTILE_SECRET_KEY;
+      const params = new URLSearchParams();
+      params.append('secret', secretKey);
+      params.append('response', captchaToken);
+      params.append('remoteip', req.ip);
 
-    const verifyURL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
-    
-    const response = await axios.post(verifyURL, params, {
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded'
-      }
-    });
-
-    // Si Cloudflare responde success: false
-    if (!response.data.success) {
-      console.error('[SECURITY] Turnstile Fallido:', response.data['error-codes']);
-      return res.status(403).json({ 
-        success: false, 
-        mensaje_usuario: 'La verificación de seguridad ha fallado. Por favor, intenta de nuevo.' 
+      const verifyURL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
+      const response = await axios.post(verifyURL, params, {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
       });
+
+      if (!response.data.success) {
+        return res.status(403).json({ 
+          success: false, 
+          mensaje_usuario: 'La verificación de seguridad ha fallado.' 
+        });
+      }
+    } catch (error) {
+      return res.status(500).json({ error: 'Error en validación de seguridad' });
     }
+  }
 
     // --- LOGICA DE BASE DE DATOS ---
     const query = `

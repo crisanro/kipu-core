@@ -50,7 +50,7 @@ app.use((req, res, next) => {
 
 
 // --- SUPER LOGGER DE DESARROLLO ---
-/*
+
 app.use((req, res, next) => {
     // Ignoramos los logs aburridos de Swagger para no ensuciar la consola
     if (req.originalUrl.startsWith('/api-docs')) return next();
@@ -103,7 +103,7 @@ app.use((req, res, next) => {
 
     next();
 });
-*/
+
 // --- SWAGGER CONFIGURATION ---
 const swaggerOptions = {
     definition: {
